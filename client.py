@@ -4,18 +4,31 @@ import json
 from udp_packet import (
     Packet,
     PacketType,
-)  
+)
+
 
 # Configuration
-# Load configuration from config.yaml
+def load_app_config():
+    """
+    Loads the configuration from a JSON file.
 
-with open('config.json', 'r') as config_file:
-    config = json.load(config_file)
+    :return: A dictionary containing the configuration parameters
+    """
+    with open("config.json", "r") as config_file:
+        config = json.load(config_file)
+    return config["app_config"]
 
+
+app_config = load_app_config()
+
+config = load_app_config()
 
 BROADCAST_IP = config["BROADCAST_IP"]
 BROADCAST_PORT = config["BROADCAST_PORT"]
+BUFFER_SIZE = config["BUFFER_SIZE"]
+
 INTERVAL = 2
+CLIENT_ID = "@alice24"
 
 
 def send_packet(packet, broadcast_ip, broadcast_port):
@@ -39,13 +52,14 @@ def send_packet(packet, broadcast_ip, broadcast_port):
 
 
 if __name__ == "__main__":
-    # Example usage of the Packet class
-    packet = Packet("Alice", "Hello, Bob!")
-    send_packet(packet, BROADCAST_IP, BROADCAST_PORT)
-
     # Send a broadcast packet every INTERVAL seconds
 
     while True:
-        packet = Packet("Alice", "Hello, Bob!", PacketType.MESSAGE, "Bob", {})
+        packet = Packet(
+            sender=CLIENT_ID,
+            recipient="+cat_persons_32",
+            packet_type=PacketType.MESSAGE,
+            data="Hello, cat persons!",
+        )
         send_packet(packet, BROADCAST_IP, BROADCAST_PORT)
         time.sleep(INTERVAL)

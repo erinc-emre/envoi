@@ -26,10 +26,9 @@ class Packet:
     
     def __init__(self, 
                  sender: str, 
-                 data: str, 
-                 packet_type: PacketType = PacketType.MESSAGE, 
-                 recipient: str = None, 
-                 metadata: dict = None):
+                 recipient: str,
+                 packet_type: PacketType, 
+                 data: str):
         """
         Initialize a new packet
         
@@ -44,7 +43,7 @@ class Packet:
         self.timestamp = None
         self.packet_type = packet_type
         self.recipient = recipient
-        self.metadata = metadata or {}
+
     
     def __str__(self):
         """
@@ -67,11 +66,3 @@ class Packet:
     def deserialize(input):
         """Deserializes bytes into a Packet object."""
         return pickle.loads(input)
-
-    
-if __name__ == "__main__":
-    # Example usage of the Packet class
-    packet = Packet("Alice", "Hello, Bob!")
-    print(packet)
-    print(packet.serialize())
-    print(Packet.deserialize(packet.serialize()))
