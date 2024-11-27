@@ -1,3 +1,7 @@
+# Exclude directories
+experiment/*
+!experiment/.gitkeep
+
 # Editors
 .vscode/
 .idea/

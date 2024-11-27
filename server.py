@@ -1,109 +1,261 @@
+import datetime
+import time
 import socket
 import json
-from udp_packet import Packet  # Assuming your Packet class is in a file named packet.py
+import threading
+from typing import Dict, Any, Optional
+
+from packet import (
+    BasePacket,
+    MessagePacket,
+    JoinPacket,
+    LeavePacket,
+    LeaderElectionStartPacket,
+    LeaderAnnouncePacket,
+)
 
 
-# Configuration
-def load_app_config():
+class ChatServer:
     """
-    Loads the configuration from a JSON file.
-
-    :return: A dictionary containing the configuration parameters
+    A UDP broadcast chat server handling various packet types and server operations.
     """
-    with open("config.json", "r") as config_file:
-        config = json.load(config_file)
-    return config["app_config"]
 
+    # Initialization
+    def __init__(self, server_ip: str, config_path: str = "config.json"):
+        """
+        Initialize the server with configuration and server state.
 
-app_config = load_app_config()
+        :param config_path: Path to the configuration JSON file
+        """
+        # Load configuration
+        self.config = self._load_config(config_path)
 
-config = load_app_config()
+        # Server network configuration
+        self.BROADCAST_IP = self.config["network"]["BROADCAST_IP"]
+        self.BROADCAST_PORT = self.config["network"]["BROADCAST_PORT"]
+        self.MULTICAST_IP = self.config["network"]["MULTICAST_IP"]
+        self.MULTICAST_PORT = self.config["network"]["MULTICAST_PORT"]
+        self.SERVER_IP = server_ip
+        self.UNICAST_PORT = self.config["network"]["UNICAST_PORT"]
+        self.BUFFER_SIZE = self.config["network"]["BUFFER_SIZE"]
 
-BROADCAST_IP = config["BROADCAST_IP"]
-BROADCAST_PORT = config["BROADCAST_PORT"]
-BUFFER_SIZE = config["BUFFER_SIZE"]
+        # Server state
+        self.server_id = f"{self.SERVER_IP}#{hash(datetime.datetime.now())}"
+        self.is_leader = False
+        self.current_leader = None
 
-# Validate Sender
-def validate_sender(sender):
-    pass
+        # Communication sockets
+        self.broadcast_socket: Optional[socket.socket] = None
+        self.multicast_socket: Optional[socket.socket] = None
+        self.unicast_socket: Optional[socket.socket] = None
 
-# Validate Recipient
-def validate_recipient(recipient):
-    pass
+        # Server Nodes in the network
+        self.nodes = {
+            self.server_id: {"server_ip": self.SERVER_IP, "is_leader": False},
+        }
 
-# Forward Multicast
-def forward_multicast():
-    pass
+        self.clients = self.config["chat"]["users"]
 
-# Forward Unicast
-def forward_unicast():
-    pass
+    # Configuration
+    def _load_config(self, config_path: str) -> Dict[str, Any]:
+        """
+        Loads the configuration from a JSON file.
 
-# Heartbeat
-def heartbeat():
-    pass
+        :param config_path: Path to the configuration file
+        :return: A dictionary containing the configuration parameters
+        """
+        try:
+            with open(config_path, "r") as config_file:
+                config = json.load(config_file)
+            return config
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"Error loading configuration: {e}")
+            return {}
 
-# Load the list of chat responsibilities
-def load_assign():
-    pass
+    # Validation
+    def _is_valid_sender(self, sender: str) -> bool:
+        """
+        OPTIONAL
+        Validate the sender of a packet.
 
-# Leader Election Start
-def leader_election_start():
-    pass
+        :param sender: Sender identifier
+        :return: Boolean indicating if sender is valid
+        """
+        pass
 
-# Leader Election Announcement with the new leader and list of chat resposbilities
-def leader_announce():
-    pass
+    def _is_valid_recipient(self, recipient: str) -> bool:
+        """
+        Validate the recipient of a packet.
 
+        :param recipient: Recipient identifier
+        :return: Boolean indicating if recipient is valid
+        """
+        return recipient in self.clients
 
-# Server Node Join
-def join():
-    pass
+    # Packet Handlers
+    def _packet_handler(self, packet_data: bytes):
+        """
+        Deserialize and handle packets based on their type.
 
-# Peaceful Server Node Shutdown
-def leave():
-    pass
+        :param packet_data: Serialized packet data
+        """
+        try:
+            packet = BasePacket.deserialize(packet_data)
 
-# Initially clients IP addresses are known, but they may change over time
-def client_ip_update():
-    pass
+            if isinstance(packet, MessagePacket):
+                self._message_handler(packet)
+            elif isinstance(packet, JoinPacket):
+                self._node_join(packet)
+            elif isinstance(packet, LeavePacket):
+                self._node_leave(packet)
+            elif isinstance(packet, LeaderElectionStartPacket):
+                self._leader_election(packet)
+            elif isinstance(packet, LeaderAnnouncePacket):
+                self._leader_announce(packet)
+            else:
+                print(f"Unknown packet type: {packet.get_packet_type()}")
+        except Exception as e:
+            print(f"Error processing packet: {e}")
 
+    def _message_handler(self, packet: MessagePacket):
+        """
+        Handle incoming chat messages.
 
-def start_server():
-    """
-    Starts the server to listen for incoming broadcast packets and prints them.
-    """
-    # Create a UDP socket
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server_socket:
-        # Allow the socket to reuse the address and port
-        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server_socket.setsockopt(
-            socket.SOL_SOCKET, socket.SO_REUSEPORT, 1
-        )  # This option may be platform-dependent
-        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        :param packet: Message packet
+        """
 
-        # Bind the socket to listen on the broadcast port
-        server_socket.bind((BROADCAST_IP, BROADCAST_PORT))
-        print(f"Server is listening for broadcasts on port {BROADCAST_PORT}...")
+        pass
 
-        while True:
+    def _node_join(self, packet: JoinPacket):
+        """
+        Handle new node joining the chat.
+
+        :param packet: Join packet
+        """
+        pass
+
+    def _node_leave(self, packet: LeavePacket):
+        """
+        Handle node leaving the chat.
+
+        :param packet: Leave packet
+        """
+        pass
+
+    def _leader_election(self, packet: LeaderElectionStartPacket):
+        """
+        Handle the start of leader election process.
+
+        :param packet: Leader election start packet
+        """
+        pass
+
+    def _leader_announce(self, packet: LeaderAnnouncePacket):
+        """
+        Leader only
+        Handle leader announcement and chat responsibility distribution.
+
+        :param packet: Leader announce packet
+        """
+        pass
+
+    # Heartbeat Functions
+    def _heartbeat(self):
+        """
+        Send heartbeats.
+
+        """
+        pass
+
+    def _heartbeat_monitor(self):
+        # Leader Only
+        pass
+
+    # Packet Listeners
+    def _receive_broadcast_packets(self):
+        """
+        Continuous packet receiving thread.
+        """
+        while self.is_running:
             try:
-                # Receive data from a client
-                data, address = server_socket.recvfrom(BUFFER_SIZE)
+                data, address = self.broadcast_socket.recvfrom(self.BUFFER_SIZE)
                 print(f"Received data from {address}")
-
-                # Deserialize the packet
-                packet = Packet.deserialize(data)
-
-                # Print packet details
-                print(f"--------------------:")
-                print(f"  Type: {packet.packet_type}")
-                print(f"  Sender: {packet.sender}")
-                print(f"  Data: {packet.data}")
-                print(f"  Timestamp: {packet.timestamp}")
+                self._packet_handler(data)
             except Exception as e:
-                print(f"!!! --- Error processing packet: {e} --- !!!")
+                print(f"Error receiving packet: {e}")
+
+    def _receive_multicast_packets(self):
+        """
+        Continuous packet receiving thread.
+        """
+        pass
+
+    def _receive_unicast_packets(self):
+        """
+        Continuous packet receiving thread.
+        """
+        pass
+
+    # Server Operations
+    def start_server(self):
+        """
+        Start the server to listen for incoming broadcast packets.
+        """
+        try:
+            self.broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            self.broadcast_socket.bind((self.BROADCAST_IP, self.BROADCAST_PORT))
+
+            # TODO: Implement multicast socket
+
+            # TODO: Implement unicast socket
+
+            print(f"Server is listening on {self.BROADCAST_IP}:{self.BROADCAST_PORT}")
+
+            self.is_running = True
+            receive_broadcast_thread = threading.Thread(
+                target=self._receive_broadcast_packets
+            )
+            heartbeat_thread = threading.Thread(target=self._heartbeat)
+
+            receive_broadcast_thread.start()
+            heartbeat_thread.start()
+
+            receive_broadcast_thread.join()
+            heartbeat_thread.join()
+
+        except Exception as e:
+            print(f"Server startup error: {e}")
+        finally:
+            if self.broadcast_socket:
+                self.broadcast_socket.close()
+
+    def stop_server(self):
+        """
+        Gracefully stop the server.
+        """
+        self.is_running = False
+        if self.broadcast_socket:
+            self.broadcast_socket.close()
+        if self.multicast_socket:
+            self.multicast_socket.close()
+        # TODO: What happens if we use TCP?
+        if self.unicast_socket:
+            self.unicast_socket.close()
+        print("Server stopped.")
+
+
+def main():
+    """
+    Main function to run the chat server.
+    """
+    server = ChatServer(server_ip="192.168.10.100")
+    try:
+        server.start_server()
+    except KeyboardInterrupt:
+        server.stop_server()
 
 
 if __name__ == "__main__":
-    start_server()
+    main()
