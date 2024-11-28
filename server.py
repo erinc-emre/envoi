@@ -5,6 +5,7 @@ import json
 import threading
 from typing import Dict, Any, Optional
 import subprocess
+import uuid
 
 from packet import (
     BasePacket,
@@ -41,7 +42,7 @@ class ChatServer:
         self.BUFFER_SIZE = self.config["network"]["BUFFER_SIZE"]
 
         # Server state
-        self.server_id = f"{self.SERVER_IP}#{hash(datetime.datetime.now())}"
+        self.server_id = uuid.uuid1()
         self.is_leader = False
         self.current_leader = None
 
@@ -169,7 +170,7 @@ class ChatServer:
         pass
 
     def _heartbeat_monitor(self):
-        # Leader Only
+
         pass
 
     # Packet Listeners
