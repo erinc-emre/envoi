@@ -4,6 +4,7 @@ import socket
 import json
 import threading
 from typing import Dict, Any, Optional
+import subprocess
 
 from packet import (
     BasePacket,
@@ -21,7 +22,7 @@ class ChatServer:
     """
 
     # Initialization
-    def __init__(self, server_ip: str, config_path: str = "config.json"):
+    def __init__(self, config_path: str = "config.json"):
         """
         Initialize the server with configuration and server state.
 
@@ -35,7 +36,7 @@ class ChatServer:
         self.BROADCAST_PORT = self.config["network"]["BROADCAST_PORT"]
         self.MULTICAST_IP = self.config["network"]["MULTICAST_IP"]
         self.MULTICAST_PORT = self.config["network"]["MULTICAST_PORT"]
-        self.SERVER_IP = server_ip
+        self.SERVER_IP = subprocess.getoutput("hostname -I | awk '{print $1}'")
         self.UNICAST_PORT = self.config["network"]["UNICAST_PORT"]
         self.BUFFER_SIZE = self.config["network"]["BUFFER_SIZE"]
 
@@ -250,7 +251,7 @@ def main():
     """
     Main function to run the chat server.
     """
-    server = ChatServer(server_ip="192.168.10.100")
+    server = ChatServer()
     try:
         server.start_server()
     except KeyboardInterrupt:
