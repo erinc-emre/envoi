@@ -11,30 +11,41 @@
     "users": {
       "@alice24": {
         "name": "Alice",
-        "ip": "192.168.10.201"
+        "ip": "192.168.10.201",
+        "id": "@alice24"
       },
       "@bob77": {
         "name": "Bob",
-        "ip": "192.168.10.202"
+        "ip": "192.168.10.202",
+        "id": "@bob77"
       },
       "@charlie42": {
         "name": "Charlie",
-        "ip": "192.168.10.203"
+        "ip": "192.168.10.203",
+        "id": "@charlie42"
       },
       "@david99": {
         "name": "David",
-        "ip": "192.168.10.204"
+        "ip": "192.168.10.204",
+        "id": "@david99"
+      },
+      "@luis80": {
+        "name": "Luis",
+        "ip": "192.168.10.205",
+        "id": "@luis80"
+      }
     }
   },
   "groups": {
-      "+cat_persons_32": {
-        "name": "group_name_1",
-        "users": ["alice24", "bob77", "charlie42"]
-      },
-      "+dog_persons_22": {
-        "name": "group_name_2",
-        "users": ["bob77", "charlie42", "david99"]
-      }
+    "+cat_persons_32": {
+      "name": "Cat Persons",
+      "users": ["@alice24", "@bob77", "@charlie42"],
+      "id": "+cat_persons_32"
+    },
+    "+dog_persons_22": {
+      "name": "Dog Persons",
+      "users": ["@bob77", "@david99","@luis80"],
+      "id": "+dog_persons_22"
     }
   }
 }
