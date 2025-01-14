@@ -2,6 +2,7 @@ import datetime
 import pickle
 from abc import ABC, abstractmethod
 
+
 class BasePacket(ABC):
     """
     Abstract base class for network packets in the chat application
@@ -154,6 +155,7 @@ class LeaderAnnouncePacket(BasePacket):
         """
         return f"{super().__str__()} announced new leader: {self.leader_id}"
 
+
 class ClientIpUpdatePacket(BasePacket):
     """
     Packet to update client IP addresses
@@ -168,6 +170,7 @@ class ClientIpUpdatePacket(BasePacket):
         :return: Formatted string describing the client IP update
         """
         return f"{super().__str__()} updated IP addresses"
+
 
 if __name__ == "__main__":
     # Example usage of the packet classes

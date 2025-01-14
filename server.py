@@ -1,11 +1,10 @@
-import datetime
-import time
 import socket
 import json
 import threading
 from typing import Dict, Any, Optional
 import subprocess
 import uuid
+import platform
 
 from packet import (
     BasePacket,
@@ -37,7 +36,7 @@ class ChatServer:
         self.BROADCAST_PORT = self.config["network"]["BROADCAST_PORT"]
         self.MULTICAST_IP = self.config["network"]["MULTICAST_IP"]
         self.MULTICAST_PORT = self.config["network"]["MULTICAST_PORT"]
-        self.SERVER_IP = subprocess.getoutput("hostname -I | awk '{print $1}'")
+        self.SERVER_IP = self.get_server_ip()
         self.UNICAST_PORT = self.config["network"]["UNICAST_PORT"]
         self.BUFFER_SIZE = self.config["network"]["BUFFER_SIZE"]
 
@@ -57,6 +56,42 @@ class ChatServer:
         }
 
         self.clients = self.config["chat"]["users"]
+
+    # Get Server IP
+
+    def get_server_ip(self):
+        os_name = platform.system()
+
+        if os_name == "Linux":
+            # Use hostname -I and awk for Linux
+            try:
+                return subprocess.getoutput("hostname -I | awk '{print $1}'")
+            except Exception as e:
+                print(f"Error retrieving IP on Linux: {e}")
+                return None
+        elif os_name == "Windows":
+            # Use socket for Windows
+            try:
+                hostname = socket.gethostname()
+                return socket.gethostbyname(hostname)
+            except Exception as e:
+                print(f"Error retrieving IP on Windows: {e}")
+                return None
+        elif os_name == "Darwin":  # macOS
+            # Use socket or ifconfig for macOS
+            try:
+                result = subprocess.getoutput("ifconfig | grep 'inet ' | grep -v 127.0.0.1 | awk '{print $2}'")
+                if result:
+                    return result.split('\n')[0]  # Return the first found IP
+                else:
+                    hostname = socket.gethostname()
+                    return socket.gethostbyname(hostname)
+            except Exception as e:
+                print(f"Error retrieving IP on macOS: {e}")
+                return None
+        else:
+            print("Unsupported OS.")
+            return None
 
     # Configuration
     def _load_config(self, config_path: str) -> Dict[str, Any]:
@@ -125,8 +160,7 @@ class ChatServer:
 
         :param packet: Message packet
         """
-
-        pass
+        print(packet)
 
     def _node_join(self, packet: JoinPacket):
         """
@@ -207,13 +241,13 @@ class ChatServer:
             self.broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            self.broadcast_socket.bind((self.BROADCAST_IP, self.BROADCAST_PORT))
+            self.broadcast_socket.bind((self.SERVER_IP, self.BROADCAST_PORT))
 
             # TODO: Implement multicast socket
 
             # TODO: Implement unicast socket
 
-            print(f"Server is listening on {self.BROADCAST_IP}:{self.BROADCAST_PORT}")
+            print(f"Server is listening on {self.SERVER_IP}:{self.BROADCAST_PORT}")
 
             self.is_running = True
             receive_broadcast_thread = threading.Thread(

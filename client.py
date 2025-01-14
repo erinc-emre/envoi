@@ -1,12 +1,7 @@
 import socket
-import time
 import json
 from packet import (
-    MessagePacket, 
-    JoinPacket, 
-    LeavePacket, 
-    LeaderElectionStartPacket, 
-    LeaderAnnouncePacket
+    MessagePacket,
 )
 
 
@@ -19,18 +14,15 @@ def load_config():
     """
     with open("config.json", "r") as config_file:
         config = json.load(config_file)
-    return config["network"]
+    return config
 
 
 # Load configuration
 config = load_config()
 
-BROADCAST_IP = config["BROADCAST_IP"]
-BROADCAST_PORT = config["BROADCAST_PORT"]
-BUFFER_SIZE = config["BUFFER_SIZE"]
-
-INTERVAL = 2
-CLIENT_ID = "@alice24"
+BROADCAST_IP = config["network"]["BROADCAST_IP"]
+BROADCAST_PORT = config["network"]["BROADCAST_PORT"]
+BUFFER_SIZE = config["network"]["BUFFER_SIZE"]
 
 
 def send_packet(packet, broadcast_ip, broadcast_port):
@@ -53,50 +45,61 @@ def send_packet(packet, broadcast_ip, broadcast_port):
         print(f"Sent {packet.get_packet_type()} packet to {broadcast_ip}:{broadcast_port}")
 
 
+def authenticate():
+    found_user = None
+    while found_user is None:
+        user_id_input = input("Please enter your user ID (e.g., @david99): ")
+
+        if user_id_input in config["chat"]["users"]:
+            found_user = config["chat"]["users"][user_id_input]
+        else:
+            print("User ID not found. Please try again.")
+
+    if found_user:
+        print(f"Welcome, {found_user['name']}!")
+
+    return found_user
+
+
+def get_group(user_id):
+    # Find the group the user is part of
+    user_group = None
+    for group_id, group_info in config["chat"]["groups"].items():
+        if user_id in group_info["users"]:
+            user_group = group_id
+            break
+
+    if user_group:
+        print(f"You are part of the group: {user_group}")
+    else:
+        print("You are not part of any group.")
+
+    return user_group
+
+
 def main():
     """
     Main function to demonstrate different packet types
     """
-    # Demonstrate different packet types in sequence
-    packets = [
-        # Message packet
-        MessagePacket(
-            sender=CLIENT_ID, 
-            recipient="+cat_persons_32", 
-            message="Hello, cat persons!"
-        ),
-        
-        # Join packet
-        JoinPacket(
-            sender=CLIENT_ID, 
-            recipient="+cat_persons_32"
-        ),
-        
-        # Leader election start packet
-        LeaderElectionStartPacket(
-            sender=CLIENT_ID, 
-            recipient="+cat_persons_32"
-        ),
-        
-        # Leader announce packet
-        LeaderAnnouncePacket(
-            sender=CLIENT_ID, 
-            recipient="+cat_persons_32", 
-            leader_id="node-1"
-        ),
 
-        # Client IP update packet
-        ClientIpUpdatePacket(
-            sender=CLIENT_ID, 
-            recipient="+cat_persons_32"
-        )
-    ]
+    print("Welcome to the Chat App.")
+    print("You are running as a client.")
 
-    # Send a different packet type every INTERVAL seconds
+    client_data = authenticate()
+    client_id = client_data["id"]
+    group_id = get_group(client_id)
+
     while True:
-        for packet in packets:
-            send_packet(packet, BROADCAST_IP, BROADCAST_PORT)
-            time.sleep(INTERVAL)
+        # Main thread for user input
+        input_message = input("\n[Input] Type your message: ")
+        if input_message.lower() == "exit":
+            print("[Info] Exiting...")
+            break
+
+        packet = MessagePacket(sender=client_id,
+                               recipient=group_id,
+                               message=input_message)
+        send_packet(packet, BROADCAST_IP, BROADCAST_PORT)
 
 
 if __name__ == "__main__":
