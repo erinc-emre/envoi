@@ -96,9 +96,25 @@ class LeaderAnnouncePacket(BasePacket):
 
 
 class ClientIpUpdatePacket(BasePacket):
-
+#AcknowledgementPacket
     def get_packet_type(self) -> str:
         return type(self).__name__
 
     def __str__(self):
         return f"{super().__str__()} updated IP addresses"
+
+class AcknowledgementPacket(BasePacket):
+    def __init__(self, sender_id: str, acknowledged_packet_id: uuid.UUID, status: str = "Success"):
+
+        super().__init__(sender_id)
+        self.acknowledged_packet_id = acknowledged_packet_id
+        self.status = status
+        self.timestamp = datetime.datetime.now()
+
+    def get_packet_type(self) -> str:
+        return type(self).__name__
+
+    def __str__(self):
+        return (f"Acknowledgment || {super().__str__()} || "
+                f"Acknowledged Packet ID: {self.acknowledged_packet_id} || "
+                f"Status: {self.status} || Timestamp: {self.timestamp}")

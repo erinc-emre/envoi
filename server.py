@@ -17,6 +17,7 @@ from packet import (
     NodeLeavePacket,
     LeaderElectionStartPacket,
     LeaderAnnouncePacket,
+    AcknowledgementPacket,
 )
 
 
@@ -37,6 +38,25 @@ def uuid1_to_timestamp(uuid1):
     # UUID epoch starts at 1582-10-15, convert to standard datetime
     return datetime(1970, 1, 1) + timedelta(seconds=timestamp)
 
+class VectorClock:
+    def __init__(self, node_id, total_nodes):
+        self.node_id = node_id
+        self.clock = [0] * total_nodes
+
+    def increment(self):
+        self.clock[self.node_id] += 1
+
+    def update(self, received_clock):
+        self.clock = [max(self.clock[i], received_clock[i]) for i in range(len(self.clock))]
+
+    def __str__(self):
+        return json.dumps(self.clock)
+
+    def is_before(self, other_clock):
+        return all(self.clock[i] <= other_clock[i] for i in range(len(self.clock)))
+
+    def is_concurrent(self, other_clock):
+        return not (self.is_before(other_clock) or other_clock.is_before(self))
 
 class ChatServer:
 
@@ -140,7 +160,45 @@ class ChatServer:
         except Exception as e:
             self.logger(f"Error sending broadcast packet: {e}")
 
-    #
+    def send_reliable_multicast(self, packet: BasePacket):
+        self.reliable_multicast_queue.append(packet)
+        for server_id in self.server_list:
+            if server_id != self.server_id:
+                self.send_unicast(packet, self.server_list[server_id]["UNICAST_IP"], self.server_list[server_id]["server_port"])
+        
+        #  multicast after all unicast messages are sent
+        self.send_multicast(packet)
+    def send_to_clients(self, message, packet_clock):
+        # Here we maintain causal consistency for message delivery
+        for client in self.users:
+            self.logger(f"Sending message to {client}: {message}")
+
+    def multicast_to_client_group(self, group_name: str, packet: BasePacket):
+        """
+        Multicasts a message to a specific group of clients defined in the configuration.
+        
+        :param group_name: The name of the group to multicast the message to.
+        :param packet: The packet to send to clients in the group.
+        """
+        try:
+            # Retrieve the list of usernames in the specified group
+            group = self.groups.get(group_name)
+            if not group:
+                self.logger(f"Group {group_name} not found.")
+                return
+
+            users_in_group = group["users"]
+            # Retrieve the IPs of users in the group
+            clients = [(self.users[user]["ip"], self.users[user]["ip"]) for user in users_in_group]
+
+            serialized_packet = packet.serialize()
+            for client_ip, _ in clients:
+                self.unicast_socket.sendto(serialized_packet, (client_ip, self.UNICAST_PORT))
+                self.logger(f"Multicast sent to {client_ip} in group {group_name}")
+        except Exception as e:
+            self.logger(f"Error sending multicast to client group {group_name}: {e}")
+
+    
     # Packet Handlers
     def packet_handler(self, raw_packet: bytes, packet_ip: str, packet_port: int):
 
@@ -171,6 +229,8 @@ class ChatServer:
                 self.on_leader_announce(
                     packet=packet, packet_ip=packet_ip, packet_port=packet_port
                 )
+            elif isinstance(packet, AcknowledgementPacket):
+                self.on_acknowledgment(packet=packet, packet_ip=packet_ip, packet_port=packet_port)
             else:
                 self.logger(f"Unknown packet type: {packet.get_packet_type()}")
         except Exception as e:
@@ -179,7 +239,18 @@ class ChatServer:
     def on_chat_message(
         self, packet: ChatMessagePacket, packet_ip: str, packet_port: int
     ):
-        pass
+        sender = packet.sender_id
+        message = packet.message
+
+        # Update vector clock for the sender
+        if sender not in self.vector_clocks:
+            self.vector_clocks[sender] = VectorClock(sender, len(self.server_list))
+        self.vector_clocks[sender].update(packet.clock)
+
+        # Handle message delivery and process reliably ordered multicast
+        self.send_to_clients(message, packet.clock)
+        self.send_acknowledgment(packet)
+
 
     def on_node_discovery(
         self, packet: NodeDiscoveryPacket, packet_ip: str, packet_port: int
@@ -212,7 +283,36 @@ class ChatServer:
                 recipient_ip=packet.unicast_ip,
                 recipient_port=packet.unicast_port,
             )
+    def send_acknowledgment(self, packet: ChatMessagePacket):
+        ack_packet = AcknowledgementPacket(sender_id=self.server_id, clock=self.vector_clocks[self.server_id].clock)
+        self.send_unicast(ack_packet, packet.sender_ip, packet.sender_port)
 
+    def on_acknowledgment(self, packet: AcknowledgementPacket, packet_ip: str, packet_port: int):
+        sender = packet.sender_id
+        ack_clock = packet.clock
+
+        # Update vector clock with the acknowledgment clock
+        if sender in self.vector_clocks:
+            self.vector_clocks[sender].update(ack_clock)
+
+        # Process reliable multicast queue and check for message delivery
+        self.process_reliable_multicast_queue()
+
+    def process_reliable_multicast_queue(self):
+        # Check if all required ACKs have been received
+        acked_messages = []
+        for msg in self.reliable_multicast_queue:
+            message_clock = msg.clock
+            is_acked = all(
+                self.vector_clocks[server_id].is_before(message_clock)
+                for server_id in self.server_list if server_id != self.server_id
+            )
+            if is_acked:
+                acked_messages.append(msg)
+
+        # Remove acknowledged messages from the queue
+        for msg in acked_messages:
+            self.reliable_multicast_queue.remove(msg)
     def on_node_discovery_reply(
         self, packet: NodeDiscoveryReplyPacket, packet_ip: str, packet_port: int
     ):
