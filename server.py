@@ -33,10 +33,9 @@ from packet import (
 # TODO: Implement server leave
 
 
-
-
 class ChatServer:
 
+    #
     # Initialization
     def __init__(self, config_path: str = "config.json"):
 
@@ -46,8 +45,6 @@ class ChatServer:
         # Server network configuration
         self.BROADCAST_IP = self.config["network"]["BROADCAST_IP"]
         self.BROADCAST_PORT = self.config["network"]["BROADCAST_PORT"]
-        self.MULTICAST_IP = self.config["network"]["MULTICAST_IP"]
-        self.MULTICAST_PORT = self.config["network"]["MULTICAST_PORT"]
         self.UNICAST_IP = self.get_server_ip()
         self.BUFFER_SIZE = self.config["network"]["BUFFER_SIZE"]
         self.DISCOVERY_TIMEOUT = self.config["network"]["DISCOVERY_TIMEOUT"]
@@ -88,45 +85,7 @@ class ChatServer:
 
         self.clients = self.config["chat"]["users"]
 
-    # Get Server IP
-
-    def get_server_ip(self):
-        os_name = platform.system()
-
-        if os_name == "Linux":
-            # Use hostname -I and awk for Linux
-            try:
-                return subprocess.getoutput("hostname -I | awk '{print $1}'")
-            except Exception as e:
-                self.logger(f"Error retrieving IP on Linux: {e}")
-                return None
-        elif os_name == "Windows":
-            # Use socket for Windows
-            try:
-                hostname = socket.gethostname()
-                return socket.gethostbyname(hostname)
-            except Exception as e:
-                self.logger(f"Error retrieving IP on Windows: {e}")
-                return None
-        elif os_name == "Darwin":  # macOS
-            # Use socket or ifconfig for macOS
-            try:
-                result = subprocess.getoutput("ifconfig | grep 'inet ' | grep -v 127.0.0.1 | awk '{print $2}'")
-                if result:
-                    return result.split('\n')[0]  # Return the first found IP
-                else:
-                    hostname = socket.gethostname()
-                    return socket.gethostbyname(hostname)
-            except Exception as e:
-                self.logger(f"Error retrieving IP on macOS: {e}")
-                return None
-        else:
-            self.logger("Unsupported OS.")
-            return None
-
-    def get_multicast_group_addr(self, user_group):
-        return self.config["chat"]["groups"][user_group]["multicast_ip"],\
-            self.config["chat"]["groups"][user_group]["multicast_port"]
+    #
     # Configuration
     def load_config(self, config_path: str) -> Dict[str, Any]:
         try:
@@ -156,8 +115,9 @@ class ChatServer:
         except Exception as e:
             self.logger(f"Error sending unicast packet: {e}")
 
-
-    def send_multicast(self, packet: BasePacket, recipient_ip: str, recipient_port: int):
+    def send_multicast(
+        self, packet: BasePacket, recipient_ip: str, recipient_port: int
+    ):
         try:
             serialized_packet = packet.serialize()
             self.multicast_socket.sendto(
@@ -221,7 +181,6 @@ class ChatServer:
         # Forward message to the multicast group
         self.send_multicast(packet, multicast_ip, multicast_port)
         self.logger(f"[Multicast] Forwarded message to {multicast_ip}:{multicast_port}")
-
 
     def on_node_discovery(
         self, packet: NodeDiscoveryPacket, packet_ip: str, packet_port: int
@@ -298,9 +257,6 @@ class ChatServer:
     def on_heartbeat(self):
         pass
 
-
-
-
     #
     # Functionalities
     def become_leader(self):
@@ -340,17 +296,58 @@ class ChatServer:
 
         # sys.stdout.write(f"{self.server_id} [{datetime.now()}] {message}\n")
         sys.stdout.write(f"{self.server_id[:5]} || {message}\n")
-    
+
     def uuid1_to_timestamp(self, uuid1):
         # Extract the timestamp components from the UUID
         timestamp = (uuid1.time - 0x01B21DD213814000) / 1e7  # Convert to seconds
         # UUID epoch starts at 1582-10-15, convert to standard datetime
         return datetime(1970, 1, 1) + timedelta(seconds=timestamp)
 
+    def get_server_ip(self):
+        os_name = platform.system()
+
+        if os_name == "Linux":
+            # Use hostname -I and awk for Linux
+            try:
+                return subprocess.getoutput("hostname -I | awk '{print $1}'")
+            except Exception as e:
+                self.logger(f"Error retrieving IP on Linux: {e}")
+                return None
+        elif os_name == "Windows":
+            # Use socket for Windows
+            try:
+                hostname = socket.gethostname()
+                return socket.gethostbyname(hostname)
+            except Exception as e:
+                self.logger(f"Error retrieving IP on Windows: {e}")
+                return None
+        elif os_name == "Darwin":  # macOS
+            # Use socket or ifconfig for macOS
+            try:
+                result = subprocess.getoutput(
+                    "ifconfig | grep 'inet ' | grep -v 127.0.0.1 | awk '{print $2}'"
+                )
+                if result:
+                    return result.split("\n")[0]  # Return the first found IP
+                else:
+                    hostname = socket.gethostname()
+                    return socket.gethostbyname(hostname)
+            except Exception as e:
+                self.logger(f"Error retrieving IP on macOS: {e}")
+                return None
+        else:
+            self.logger("Unsupported OS.")
+            return None
+
+    def get_multicast_group_addr(self, user_group):
+        return (
+            self.config["chat"]["groups"][user_group]["multicast_ip"],
+            self.config["chat"]["groups"][user_group]["multicast_port"],
+        )
 
     #
     # Packet Listeners
-    def receive_broadcast_packets(self):
+    def receive_broadcast(self):
 
         self.logger(f"Listening {self.BROADCAST_IP}:{self.BROADCAST_PORT}")
         while self.is_running:
@@ -363,7 +360,7 @@ class ChatServer:
             except Exception as e:
                 self.logger(f"Error receiving a broadcast packet: {e}")
 
-    def receive_multicast_packets(self):
+    def receive_multicast(self):
 
         self.logger(f"Listening {self.MULTICAST_IP}:{self.MULTICAST_PORT}")
         while self.is_running:
@@ -376,7 +373,7 @@ class ChatServer:
             except Exception as e:
                 self.logger(f"Error receiving a multicast packet: {e}")
 
-    def receive_unicast_packets(self):
+    def receive_unicast(self):
 
         self.logger(f"Listening {self.UNICAST_IP}:{self.UNICAST_PORT}")
         while self.is_running:
@@ -389,6 +386,7 @@ class ChatServer:
             except Exception as e:
                 self.logger(f"Error receiving a unicast packet: {e}")
 
+    #
     # Server Operations
     def start_server(self):
 
@@ -423,9 +421,7 @@ class ChatServer:
 
         # Start the broadcast listening thread
         try:
-            receive_broadcast_thread = threading.Thread(
-                target=self.receive_broadcast_packets
-            )
+            receive_broadcast_thread = threading.Thread(target=self.receive_broadcast)
 
             receive_broadcast_thread.start()
         except Exception as e:
@@ -433,9 +429,7 @@ class ChatServer:
 
         # Start the multicast listening thread
         try:
-            receive_multicast_thread = threading.Thread(
-                target=self.receive_multicast_packets
-            )
+            receive_multicast_thread = threading.Thread(target=self.receive_multicast)
 
             receive_multicast_thread.start()
         except Exception as e:
@@ -443,9 +437,7 @@ class ChatServer:
 
         # Start the unicast listening thread
         try:
-            receive_unicast_thread = threading.Thread(
-                target=self.receive_unicast_packets
-            )
+            receive_unicast_thread = threading.Thread(target=self.receive_unicast)
 
             receive_unicast_thread.start()
         except Exception as e:

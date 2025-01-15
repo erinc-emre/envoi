@@ -25,7 +25,6 @@ class BasePacket(ABC):
         return f"{self.id}"
 
 
-
 class ChatMessagePacket(BasePacket):
 
     def __init__(self, sender_id: str, message: str, chat_group: str):

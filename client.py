@@ -6,11 +6,15 @@ import threading
 from packet import BasePacket, ChatMessagePacket
 
 
-#TODO: Move sockets in to class, dont keep inside functions
-#TODO: Close sockets properly on exit
-#TODO: Pretty print the message to the console
+# TODO: Move sockets in to class, dont keep inside functions
+# TODO: Close sockets properly on exit
+# TODO: Pretty print the message to the console
+
 
 class ChatClient:
+
+    #
+    # Initialization
     def __init__(self, config_path: str = "config.json"):
         """
         Initialize the client with configuration.
@@ -24,30 +28,18 @@ class ChatClient:
         self.client_id = str(uuid.uuid1())
         self.user_id = self.authenticate()
         self.user_data = self.config["chat"]["users"][self.user_id]
-        self.group_id = self.get_group(self.user_id)
+        self.group_id = self.get_group_id(self.user_id)
         self.is_running = True
 
         self.MULTICAST_IP = self.config["chat"]["groups"][self.group_id]["multicast_ip"]
         self.MULTICAST_PORT = self.config["chat"]["groups"][self.group_id][
             "multicast_port"
         ]
-
-    def logger(self, message):
-
-        # sys.stdout.write(f"{self.user_id} [{datetime.now()}] {message}\n")
-        sys.stdout.write(f"{self.client_id} || {message}\n")
-
-    def load_config(self, config_path: str):
-        """
-        Loads the configuration from a JSON file.
-
-        :param config_path: Path to the configuration file
-        :return: A dictionary containing the configuration parameters
-        """
-        with open(config_path, "r") as config_file:
-            return json.load(config_file)
-
-    def send_packet(self, packet):
+        self.vector_clock = {user_id: 0 for user_id in self.config["chat"]["users"].keys()}
+    
+    #
+    # Packet Sending
+    def send_broadcast(self, packet):
         """
         Sends a serialized packet via UDP broadcast.
 
@@ -62,6 +54,23 @@ class ChatClient:
             self.logger(
                 f"Sent {packet.get_packet_type()} packet to {self.BROADCAST_IP}:{self.BROADCAST_PORT}"
             )
+
+    #
+    # Functionalities
+    def logger(self, message):
+
+        # sys.stdout.write(f"{self.user_id} [{datetime.now()}] {message}\n")
+        sys.stdout.write(f"{self.client_id} || {message}\n")
+
+    def load_config(self, config_path: str):
+        """
+        Loads the configuration from a JSON file.
+
+        :param config_path: Path to the configuration file
+        :return: A dictionary containing the configuration parameters
+        """
+        with open(config_path, "r") as config_file:
+            return json.load(config_file)
 
     def authenticate(self):
         try:
@@ -78,23 +87,26 @@ class ChatClient:
             self.logger("Authentication stopped.")
             exit()
 
-    def get_group(self, user_id):
-        user_group = None
+    def get_group_id(self, user_id):
+        """
+        Retrieves the group ID for the given user ID.
+
+        :param user_id: The user ID to look up
+        :return: The group ID the user belongs to, or None if not found
+        """
         for group_id, group_info in self.config["chat"]["groups"].items():
             if user_id in group_info["users"]:
-                user_group = group_id
-                break
-        self.logger(
-            f"You are part of the group: {user_group}"
-            if user_group
-            else "You are not part of any group."
-        )
-        return user_group
+                self.print_message(f"You are part of the group: {group_id}")
+                return group_id
+        self.print_message("You are not part of any group.")
+        return None
 
-    def print_message(self, packet):
-        #TODO: Pretty print the message to the console
-        print(f"{packet.sender_id}: {packet.message}")
+    def print_message(self, message):
+        # TODO: Pretty print the message to the console
+        print(message)
 
+    #
+    # Packet Listeners
     def receive_multicast(self):
         """
         Listens for multicast messages.
@@ -102,7 +114,7 @@ class ChatClient:
         with socket.socket(
             socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP
         ) as sock:
-            
+
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
             # Bind to 0.0.0.0:PORT instead of the multicast IP
@@ -118,17 +130,16 @@ class ChatClient:
 
                     packet = BasePacket.deserialize(data)
 
-                    if  isinstance(packet, ChatMessagePacket):
+                    if isinstance(packet, ChatMessagePacket):
                         self.print_message(packet)
 
-
                     self.logger(f"Packet received from: {packet.sender_id}")
-
 
                 except Exception as e:
                     self.logger(f"[Error] Multicast receive error: {e}")
 
-
+    #
+    # Server Operations
     def start_client(self):
         """
         Starts the client to send and receive messages.
@@ -149,13 +160,12 @@ class ChatClient:
                     message=input_message,
                     chat_group=self.group_id,
                 )
-                self.send_packet(packet)
+                self.send_broadcast(packet)
         except KeyboardInterrupt:
             self.logger("\nClient stopped.")
 
     def exit_client(self):
         self.is_running = False
-
 
 
 if __name__ == "__main__":
