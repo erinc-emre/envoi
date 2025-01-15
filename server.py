@@ -98,7 +98,7 @@ class ChatServer:
             try:
                 return subprocess.getoutput("hostname -I | awk '{print $1}'")
             except Exception as e:
-                print(f"Error retrieving IP on Linux: {e}")
+                self.logger(f"Error retrieving IP on Linux: {e}")
                 return None
         elif os_name == "Windows":
             # Use socket for Windows
@@ -106,7 +106,7 @@ class ChatServer:
                 hostname = socket.gethostname()
                 return socket.gethostbyname(hostname)
             except Exception as e:
-                print(f"Error retrieving IP on Windows: {e}")
+                self.logger(f"Error retrieving IP on Windows: {e}")
                 return None
         elif os_name == "Darwin":  # macOS
             # Use socket or ifconfig for macOS
@@ -118,13 +118,13 @@ class ChatServer:
                     hostname = socket.gethostname()
                     return socket.gethostbyname(hostname)
             except Exception as e:
-                print(f"Error retrieving IP on macOS: {e}")
+                self.logger(f"Error retrieving IP on macOS: {e}")
                 return None
         else:
-            print("Unsupported OS.")
+            self.logger("Unsupported OS.")
             return None
 
-    def get_multicast_address(self, user_group):
+    def get_multicast_group_addr(self, user_group):
         return self.config["chat"]["groups"][user_group]["multicast_ip"],\
             self.config["chat"]["groups"][user_group]["multicast_port"]
     # Configuration
@@ -157,11 +157,11 @@ class ChatServer:
             self.logger(f"Error sending unicast packet: {e}")
 
 
-    def send_multicast(self, packet: BasePacket):
+    def send_multicast(self, packet: BasePacket, recipient_ip: str, recipient_port: int):
         try:
             serialized_packet = packet.serialize()
             self.multicast_socket.sendto(
-                serialized_packet, (self.MULTICAST_IP, self.MULTICAST_PORT)
+                serialized_packet, (recipient_ip, recipient_port)
             )
         except Exception as e:
             self.logger(f"Error sending multicast packet: {e}")
@@ -215,14 +215,12 @@ class ChatServer:
     def on_chat_message(
         self, packet: ChatMessagePacket, packet_ip: str, packet_port: int
     ):
-        # Serialize the packet
-        serialized_packet = packet.serialize()
 
-        multicast_ip, multicast_port = self.get_multicast_address(packet.chat_group)
+        multicast_ip, multicast_port = self.get_multicast_group_addr(packet.chat_group)
 
-        # Send message to the multicast group
-        self.multicast_socket.sendto(serialized_packet, (multicast_ip, multicast_port))
-        print(f"[Multicast] Forwarded message to {multicast_ip}:{multicast_port}")
+        # Forward message to the multicast group
+        self.send_multicast(packet, multicast_ip, multicast_port)
+        self.logger(f"[Multicast] Forwarded message to {multicast_ip}:{multicast_port}")
 
 
     def on_node_discovery(
