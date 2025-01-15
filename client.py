@@ -2,11 +2,11 @@ import socket
 import time
 import json
 from packet import (
-    MessagePacket, 
-    JoinPacket, 
-    LeavePacket, 
-    LeaderElectionStartPacket, 
-    LeaderAnnouncePacket
+    MessagePacket,
+    NodeDiscoveryPacket,
+    NodeLeavePacket,
+    LeaderElectionStartPacket,
+    LeaderAnnouncePacket,
 )
 
 
@@ -50,7 +50,9 @@ def send_packet(packet, broadcast_ip, broadcast_port):
 
         # Send the packet
         client_socket.sendto(serialized_packet, (broadcast_ip, broadcast_port))
-        print(f"Sent {packet.get_packet_type()} packet to {broadcast_ip}:{broadcast_port}")
+        print(
+            f"Sent {packet.get_packet_type()} packet to {broadcast_ip}:{broadcast_port}"
+        )
 
 
 def main():
@@ -61,35 +63,18 @@ def main():
     packets = [
         # Message packet
         MessagePacket(
-            sender=CLIENT_ID, 
-            recipient="+cat_persons_32", 
-            message="Hello, cat persons!"
+            sender=CLIENT_ID, recipient="+cat_persons_32", message="Hello, cat persons!"
         ),
-        
         # Join packet
-        JoinPacket(
-            sender=CLIENT_ID, 
-            recipient="+cat_persons_32"
-        ),
-        
+        NodeDiscoveryPacket(sender=CLIENT_ID, recipient="+cat_persons_32"),
         # Leader election start packet
-        LeaderElectionStartPacket(
-            sender=CLIENT_ID, 
-            recipient="+cat_persons_32"
-        ),
-        
+        LeaderElectionStartPacket(sender=CLIENT_ID, recipient="+cat_persons_32"),
         # Leader announce packet
         LeaderAnnouncePacket(
-            sender=CLIENT_ID, 
-            recipient="+cat_persons_32", 
-            leader_id="node-1"
+            sender=CLIENT_ID, recipient="+cat_persons_32", leader_id="node-1"
         ),
-
         # Client IP update packet
-        ClientIpUpdatePacket(
-            sender=CLIENT_ID, 
-            recipient="+cat_persons_32"
-        )
+        ClientIpUpdatePacket(sender=CLIENT_ID, recipient="+cat_persons_32"),
     ]
 
     # Send a different packet type every INTERVAL seconds
