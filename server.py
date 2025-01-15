@@ -31,11 +31,6 @@ from packet import (
 # TODO: Implement server leave
 
 
-def uuid1_to_timestamp(uuid1):
-    # Extract the timestamp components from the UUID
-    timestamp = (uuid1.time - 0x01B21DD213814000) / 1e7  # Convert to seconds
-    # UUID epoch starts at 1582-10-15, convert to standard datetime
-    return datetime(1970, 1, 1) + timedelta(seconds=timestamp)
 
 
 class ChatServer:
@@ -296,6 +291,13 @@ class ChatServer:
 
         # sys.stdout.write(f"{self.server_id} [{datetime.now()}] {message}\n")
         sys.stdout.write(f"{self.server_id[:5]} || {message}\n")
+    
+    def uuid1_to_timestamp(self, uuid1):
+        # Extract the timestamp components from the UUID
+        timestamp = (uuid1.time - 0x01B21DD213814000) / 1e7  # Convert to seconds
+        # UUID epoch starts at 1582-10-15, convert to standard datetime
+        return datetime(1970, 1, 1) + timedelta(seconds=timestamp)
+
 
     #
     # Packet Listeners
