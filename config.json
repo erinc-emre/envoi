@@ -1,9 +1,9 @@
 {
   "network":{
-  "BROADCAST_IP": "192.168.10.255",
+  "BROADCAST_IP": "100.67.60.177",
   "BROADCAST_PORT": 3000,
-  "MULTICAST_IP": "239.10.10.1",
-  "MULTICAST_PORT": 4000,
+  "MULTICAST_IP": "239.1.1.1",
+  "MULTICAST_PORT": 5000,
   "UNICAST_PORT": 5000,
   "BUFFER_SIZE": 4096
   },
@@ -29,9 +29,14 @@
         "ip": "192.168.10.204",
         "id": "@david99"
       },
+      "@emma01": {
+        "name": "Emma",
+        "ip": "192.168.10.205",
+        "id": "@emma01"
+      },
       "@luis80": {
         "name": "Luis",
-        "ip": "192.168.10.205",
+        "ip": "192.168.10.206",
         "id": "@luis80"
       }
     },
@@ -39,12 +44,16 @@
       "+cat_persons_32": {
         "name": "Cat Persons",
         "users": ["@alice24", "@bob77", "@charlie42"],
-        "id": "+cat_persons_32"
+        "id": "+cat_persons_32",
+        "multicast_ip": "239.1.1.1",
+        "multicast_port": 5000
       },
       "+dog_persons_22": {
         "name": "Dog Persons",
-        "users": ["@bob77", "@david99","@luis80"],
-        "id": "+dog_persons_22"
+        "users": ["@david99", "@emma01", "@luis80"],
+        "id": "+dog_persons_22",
+        "multicast_ip": "239.1.1.1",
+        "multicast_port": 4000
       }
     }
   }

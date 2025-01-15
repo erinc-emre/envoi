@@ -93,6 +93,9 @@ class ChatServer:
             print("Unsupported OS.")
             return None
 
+    def get_multicast_address(self, user_group):
+        return self.config["chat"]["groups"][user_group]["multicast_ip"],\
+            self.config["chat"]["groups"][user_group]["multicast_port"]
     # Configuration
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """
@@ -156,11 +159,20 @@ class ChatServer:
 
     def _message_handler(self, packet: MessagePacket):
         """
-        Handle incoming chat messages.
+        Handle incoming chat messages and multicast them.
 
         :param packet: Message packet
         """
-        print(packet)
+        print(f"[Message] {packet.sender} -> {packet.recipient}: {packet.message}")
+
+        # Serialize the packet
+        serialized_packet = packet.serialize()
+
+        multicast_ip, multicast_port = self.get_multicast_address(packet.recipient)
+
+        # Send message to the multicast group
+        self.multicast_socket.sendto(serialized_packet, (multicast_ip, multicast_port))
+        print(f"[Multicast] Forwarded message to {multicast_ip}:{multicast_port}")
 
     def _node_join(self, packet: JoinPacket):
         """
@@ -235,37 +247,33 @@ class ChatServer:
     # Server Operations
     def start_server(self):
         """
-        Start the server to listen for incoming broadcast packets.
+        Start the server to listen for incoming packets.
         """
         try:
+            # Setup Broadcast Socket
             self.broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             self.broadcast_socket.bind((self.SERVER_IP, self.BROADCAST_PORT))
 
-            # TODO: Implement multicast socket
-
-            # TODO: Implement unicast socket
+            # Setup Multicast Socket
+            self.multicast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+            self.multicast_socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
 
             print(f"Server is listening on {self.SERVER_IP}:{self.BROADCAST_PORT}")
 
             self.is_running = True
-            receive_broadcast_thread = threading.Thread(
-                target=self._receive_broadcast_packets
-            )
-            heartbeat_thread = threading.Thread(target=self._heartbeat)
-
+            receive_broadcast_thread = threading.Thread(target=self._receive_broadcast_packets)
             receive_broadcast_thread.start()
-            heartbeat_thread.start()
-
             receive_broadcast_thread.join()
-            heartbeat_thread.join()
 
         except Exception as e:
             print(f"Server startup error: {e}")
         finally:
             if self.broadcast_socket:
                 self.broadcast_socket.close()
+            if self.multicast_socket:
+                self.multicast_socket.close()
 
     def stop_server(self):
         """

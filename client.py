@@ -1,8 +1,10 @@
 import socket
 import json
 import threading
-from packet import MessagePacket
-
+from packet import (
+    BasePacket,
+    MessagePacket,
+)
 
 class ChatClient:
     def __init__(self, config_path: str = "config.json"):
@@ -19,6 +21,7 @@ class ChatClient:
         self.client_id = self.client_data["id"]
         self.group_id = self.get_group(self.client_id)
         self.is_running = True
+        self.update_multicast_address(self.group_id)
 
     def _load_config(self, config_path: str):
         """
@@ -62,12 +65,44 @@ class ChatClient:
         print(f"You are part of the group: {user_group}" if user_group else "You are not part of any group.")
         return user_group
 
+    def update_multicast_address(self, user_group):
+        self.MULTICAST_IP = self.config["chat"]["groups"][user_group]["multicast_ip"]
+        self.MULTICAST_PORT = self.config["chat"]["groups"][user_group]["multicast_port"]
+
+    def receive_multicast(self):
+        """
+        Listens for multicast messages.
+        """
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+            # Bind to 0.0.0.0:PORT instead of the multicast IP
+            sock.bind(("0.0.0.0", self.MULTICAST_PORT))
+
+            # Join multicast group
+            mreq = socket.inet_aton(self.MULTICAST_IP) + socket.inet_aton("0.0.0.0")
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+
+            while self.is_running:
+                try:
+                    data, _ = sock.recvfrom(self.BUFFER_SIZE)
+                    try:
+                        packet = BasePacket.deserialize(data)
+                        print(packet)
+                    except Exception as e:
+                        print(f"[Error] Failed to deserialize packet: {e}")
+                except Exception as e:
+                    print(f"[Error] Multicast reception failed: {e}")
+                    break
+
     def start_client(self):
         """
-        Starts the client to send messages.
+        Starts the client to send and receive messages.
         """
         print("Welcome to the Chat App.")
         print("You are running as a client.")
+        receive_thread = threading.Thread(target=self.receive_multicast, daemon=True)
+        receive_thread.start()
         try:
             while self.is_running:
                 input_message = input("\n[Input] Type your message: ")
