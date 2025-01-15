@@ -25,6 +25,7 @@ class BasePacket(ABC):
         return f"{self.id}"
 
 
+# Broadcast + Multicast packet
 class ChatMessagePacket(BasePacket):
 
     def __init__(self, sender_id: str, message: str, chat_group: str):
@@ -39,6 +40,7 @@ class ChatMessagePacket(BasePacket):
         return f"{super().__str__()}: {self.message}"
 
 
+# Broadcast packet
 class NodeDiscoveryPacket(BasePacket):
 
     def __init__(self, sender_id: str, unicast_ip: str, unicast_port: int):
@@ -53,6 +55,7 @@ class NodeDiscoveryPacket(BasePacket):
         return f"Server Discovery Message || {super().__str__()} || IP: {self.unicast_ip}, Port: {self.unicast_port}"
 
 
+# Unicast packet
 class NodeDiscoveryReplyPacket(BasePacket):
 
     def __init__(self, sender_id: str, server_list: str):
@@ -66,6 +69,7 @@ class NodeDiscoveryReplyPacket(BasePacket):
         return f"Server Discovery Reply Message || {super().__str__()}"
 
 
+# Unicast packet
 class NodeLeavePacket(BasePacket):
 
     def get_packet_type(self) -> str:
@@ -75,6 +79,7 @@ class NodeLeavePacket(BasePacket):
         return f"{super().__str__()} || Server Leave Message"
 
 
+# Unicast packet
 class LeaderElectionStartPacket(BasePacket):
 
     def get_packet_type(self) -> str:
@@ -84,6 +89,7 @@ class LeaderElectionStartPacket(BasePacket):
         return f"{super().__str__()} leader election started"
 
 
+# Broadcast packet
 class LeaderAnnouncePacket(BasePacket):
 
     def __init__(self, sender_id: str, server_list: dict):
@@ -95,12 +101,3 @@ class LeaderAnnouncePacket(BasePacket):
 
     def __str__(self):
         return f"{super().__str__()} announced new leader: {self.leader_id}"
-
-
-class ClientIpUpdatePacket(BasePacket):
-
-    def get_packet_type(self) -> str:
-        return type(self).__name__
-
-    def __str__(self):
-        return f"{super().__str__()} updated IP addresses"

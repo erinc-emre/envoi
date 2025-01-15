@@ -35,8 +35,10 @@ class ChatClient:
         self.MULTICAST_PORT = self.config["chat"]["groups"][self.group_id][
             "multicast_port"
         ]
-        self.vector_clock = {user_id: 0 for user_id in self.config["chat"]["users"].keys()}
-    
+        self.vector_clock = {
+            user_id: 0 for user_id in self.config["chat"]["users"].keys()
+        }
+
     #
     # Packet Sending
     def send_broadcast(self, packet):

@@ -1,6 +1,7 @@
 import argparse
 from datetime import datetime, timedelta
 import select
+import struct
 import time
 import sys
 import socket
@@ -21,9 +22,6 @@ from packet import (
     LeaderAnnouncePacket,
 )
 
-
-# TODO: Add broadcast recipients
-# TODO: Check of recipient on broadcast packets
 
 # TODO: Multiple servers can't start at the first DISCOVERY_TIMEOUT seconds
 
@@ -83,7 +81,8 @@ class ChatServer:
             },
         }
 
-        self.clients = self.config["chat"]["users"]
+        # self.logical_ring = self.build_logical_ring(self.server_list)
+        # print(self.logical_ring)
 
     #
     # Configuration
@@ -102,7 +101,7 @@ class ChatServer:
         pass
 
     def is_valid_recipient(self, recipient: str) -> bool:
-        return recipient in self.clients
+        return recipient in self.config["chat"]["users"]
 
     #
     # Packet Sending
@@ -345,6 +344,18 @@ class ChatServer:
             self.config["chat"]["groups"][user_group]["multicast_port"],
         )
 
+    def build_logical_ring(self, server_list):
+        server_ids = list(server_list.keys())
+        logical_ring = {server_id: None for server_id in server_ids}
+        for i, server_id in enumerate(server_ids):
+            if i == 0:
+                logical_ring[server_id] = (server_ids[-1], server_ids[i + 1])
+            elif i == len(server_ids) - 1:
+                logical_ring[server_id] = (server_ids[i - 1], server_ids[0])
+            else:
+                logical_ring[server_id] = (server_ids[i - 1], server_ids[i + 1])
+        return logical_ring
+
     #
     # Packet Listeners
     def receive_broadcast(self):
@@ -359,19 +370,6 @@ class ChatServer:
 
             except Exception as e:
                 self.logger(f"Error receiving a broadcast packet: {e}")
-
-    def receive_multicast(self):
-
-        self.logger(f"Listening {self.MULTICAST_IP}:{self.MULTICAST_PORT}")
-        while self.is_running:
-            try:
-                data, addr = self.multicast_socket.recvfrom(self.BUFFER_SIZE)
-                self.packet_handler(
-                    raw_packet=data, packet_ip=addr[0], packet_port=addr[1]
-                )
-
-            except Exception as e:
-                self.logger(f"Error receiving a multicast packet: {e}")
 
     def receive_unicast(self):
 
@@ -405,11 +403,32 @@ class ChatServer:
 
         # Bind the multicast socket
         try:
-            self.multicast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.multicast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.multicast_socket.bind((self.MULTICAST_IP, self.MULTICAST_PORT))
+
+            self.multicast_socket = socket.socket(
+                socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP
+            )
+            self.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                self.multicast_socket.setsockopt(
+                    socket.SOL_SOCKET, socket.SO_REUSEPORT, 1
+                )  # Optional, may not be available on all systems
+            except AttributeError:
+                print(
+                    "SO_REUSEPORT is not supported on this system. Continuing without it."
+                )
+
+            # Set socket options for multicast
+            ttl = struct.pack(
+                "b", self.config["network"]["TTL"]
+            )  # Time-to-live: 1 (local network)
+            self.multicast_socket.setsockopt(
+                socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl
+            )
+
         except Exception as e:
             self.logger(f"Multicast port binding error: {e}")
+        finally:
+            self.multicast_socket.close()
 
         # Bind the unicast socket
         try:
@@ -426,14 +445,6 @@ class ChatServer:
             receive_broadcast_thread.start()
         except Exception as e:
             self.logger(f"Broadcast listening thread error: {e}")
-
-        # Start the multicast listening thread
-        try:
-            receive_multicast_thread = threading.Thread(target=self.receive_multicast)
-
-            receive_multicast_thread.start()
-        except Exception as e:
-            self.logger(f"Multicast listening thread error: {e}")
 
         # Start the unicast listening thread
         try:
