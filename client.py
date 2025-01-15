@@ -1,10 +1,8 @@
 import socket
 import json
 import threading
-from packet import (
-    BasePacket,
-    MessagePacket,
-)
+from packet import BasePacket, ChatMessagePacket
+
 
 class ChatClient:
     def __init__(self, config_path: str = "config.json"):
@@ -42,8 +40,12 @@ class ChatClient:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client_socket:
             client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             serialized_packet = packet.serialize()
-            client_socket.sendto(serialized_packet, (self.BROADCAST_IP, self.BROADCAST_PORT))
-            print(f"Sent {packet.get_packet_type()} packet to {self.BROADCAST_IP}:{self.BROADCAST_PORT}")
+            client_socket.sendto(
+                serialized_packet, (self.BROADCAST_IP, self.BROADCAST_PORT)
+            )
+            print(
+                f"Sent {packet.get_packet_type()} packet to {self.BROADCAST_IP}:{self.BROADCAST_PORT}"
+            )
 
     def authenticate(self):
         found_user = None
@@ -62,18 +64,26 @@ class ChatClient:
             if user_id in group_info["users"]:
                 user_group = group_id
                 break
-        print(f"You are part of the group: {user_group}" if user_group else "You are not part of any group.")
+        print(
+            f"You are part of the group: {user_group}"
+            if user_group
+            else "You are not part of any group."
+        )
         return user_group
 
     def update_multicast_address(self, user_group):
         self.MULTICAST_IP = self.config["chat"]["groups"][user_group]["multicast_ip"]
-        self.MULTICAST_PORT = self.config["chat"]["groups"][user_group]["multicast_port"]
+        self.MULTICAST_PORT = self.config["chat"]["groups"][user_group][
+            "multicast_port"
+        ]
 
     def receive_multicast(self):
         """
         Listens for multicast messages.
         """
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as sock:
+        with socket.socket(
+            socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP
+        ) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
             # Bind to 0.0.0.0:PORT instead of the multicast IP
@@ -110,7 +120,11 @@ class ChatClient:
                     print("[Info] Exiting...")
                     self.is_running = False
                     break
-                packet = MessagePacket(sender=self.client_id, recipient=self.group_id, message=input_message)
+                packet = ChatMessagePacket(
+                    sender_id=self.client_id,
+                    message=input_message,
+                    chat_group=self.group_id,
+                )
                 self.send_packet(packet)
         except KeyboardInterrupt:
             print("\nClient stopped.")

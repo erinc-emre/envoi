@@ -1,3 +1,8 @@
+import argparse
+from datetime import datetime, timedelta
+import select
+import time
+import sys
 import socket
 import json
 import threading
@@ -8,51 +13,77 @@ import platform
 
 from packet import (
     BasePacket,
-    MessagePacket,
-    JoinPacket,
-    LeavePacket,
+    ChatMessagePacket,
+    NodeDiscoveryPacket,
+    NodeDiscoveryReplyPacket,
+    NodeLeavePacket,
     LeaderElectionStartPacket,
     LeaderAnnouncePacket,
 )
 
 
+# TODO: Add broadcast recipients
+# TODO: Check of recipient on broadcast packets
+
+# TODO: Multiple servers can't start at the first DISCOVERY_TIMEOUT seconds
+
+# TODO: Implement Logical Ring for leader election
+# TODO: Implement LCR algorithm for leader election
+# TODO: Implement heartbeat on the logical ring
+# TODO: Implement server leave
+
+
+
+
 class ChatServer:
-    """
-    A UDP broadcast chat server handling various packet types and server operations.
-    """
 
     # Initialization
     def __init__(self, config_path: str = "config.json"):
-        """
-        Initialize the server with configuration and server state.
 
-        :param config_path: Path to the configuration JSON file
-        """
         # Load configuration
-        self.config = self._load_config(config_path)
+        self.config = self.load_config(config_path)
 
         # Server network configuration
         self.BROADCAST_IP = self.config["network"]["BROADCAST_IP"]
         self.BROADCAST_PORT = self.config["network"]["BROADCAST_PORT"]
         self.MULTICAST_IP = self.config["network"]["MULTICAST_IP"]
         self.MULTICAST_PORT = self.config["network"]["MULTICAST_PORT"]
-        self.SERVER_IP = self.get_server_ip()
-        self.UNICAST_PORT = self.config["network"]["UNICAST_PORT"]
+        self.UNICAST_IP = self.get_server_ip()
         self.BUFFER_SIZE = self.config["network"]["BUFFER_SIZE"]
+        self.DISCOVERY_TIMEOUT = self.config["network"]["DISCOVERY_TIMEOUT"]
+
+        parser = argparse.ArgumentParser(description="Chat Server")
+        parser.add_argument(
+            "--unicast-port",
+            type=int,
+            required=True,
+            help="Unicast port for the server",
+        )
+        args = parser.parse_args()
+        self.UNICAST_PORT = args.unicast_port
 
         # Server state
-        self.server_id = uuid.uuid1()
+        self.server_id = str(uuid.uuid1())
         self.is_leader = False
         self.current_leader = None
+        self.is_running = False
+        self.last_discovery_request_time = None
+
+        self.discovery_reply_receive = threading.Event()
 
         # Communication sockets
         self.broadcast_socket: Optional[socket.socket] = None
         self.multicast_socket: Optional[socket.socket] = None
         self.unicast_socket: Optional[socket.socket] = None
 
-        # Server Nodes in the network
-        self.nodes = {
-            self.server_id: {"server_ip": self.SERVER_IP, "is_leader": False},
+        # Servers in the network
+        self.server_list = {
+            self.server_id: {
+                "UNICAST_IP": self.UNICAST_IP,
+                "server_port": self.UNICAST_PORT,
+                "is_leader": self.is_leader,
+                "chat_groups": [],
+            },
         }
 
         self.clients = self.config["chat"]["users"]
@@ -97,188 +128,361 @@ class ChatServer:
         return self.config["chat"]["groups"][user_group]["multicast_ip"],\
             self.config["chat"]["groups"][user_group]["multicast_port"]
     # Configuration
-    def _load_config(self, config_path: str) -> Dict[str, Any]:
-        """
-        Loads the configuration from a JSON file.
-
-        :param config_path: Path to the configuration file
-        :return: A dictionary containing the configuration parameters
-        """
+    def load_config(self, config_path: str) -> Dict[str, Any]:
         try:
             with open(config_path, "r") as config_file:
                 config = json.load(config_file)
             return config
         except (FileNotFoundError, json.JSONDecodeError) as e:
-            print(f"Error loading configuration: {e}")
+            self.logger(f"Error loading configuration: {e}")
             return {}
 
+    #
     # Validation
-    def _is_valid_sender(self, sender: str) -> bool:
-        """
-        OPTIONAL
-        Validate the sender of a packet.
-
-        :param sender: Sender identifier
-        :return: Boolean indicating if sender is valid
-        """
+    def is_valid_sender(self, sender: str) -> bool:
         pass
 
-    def _is_valid_recipient(self, recipient: str) -> bool:
-        """
-        Validate the recipient of a packet.
-
-        :param recipient: Recipient identifier
-        :return: Boolean indicating if recipient is valid
-        """
+    def is_valid_recipient(self, recipient: str) -> bool:
         return recipient in self.clients
 
-    # Packet Handlers
-    def _packet_handler(self, packet_data: bytes):
-        """
-        Deserialize and handle packets based on their type.
-
-        :param packet_data: Serialized packet data
-        """
+    #
+    # Packet Sending
+    def send_unicast(self, packet: BasePacket, recipient_ip: str, recipient_port: int):
         try:
-            packet = BasePacket.deserialize(packet_data)
-
-            if isinstance(packet, MessagePacket):
-                self._message_handler(packet)
-            elif isinstance(packet, JoinPacket):
-                self._node_join(packet)
-            elif isinstance(packet, LeavePacket):
-                self._node_leave(packet)
-            elif isinstance(packet, LeaderElectionStartPacket):
-                self._leader_election(packet)
-            elif isinstance(packet, LeaderAnnouncePacket):
-                self._leader_announce(packet)
-            else:
-                print(f"Unknown packet type: {packet.get_packet_type()}")
+            serialized_packet = packet.serialize()
+            self.unicast_socket.sendto(
+                serialized_packet, (recipient_ip, recipient_port)
+            )
         except Exception as e:
-            print(f"Error processing packet: {e}")
+            self.logger(f"Error sending unicast packet: {e}")
 
-    def _message_handler(self, packet: MessagePacket):
-        """
-        Handle incoming chat messages and multicast them.
 
-        :param packet: Message packet
-        """
-        print(f"[Message] {packet.sender} -> {packet.recipient}: {packet.message}")
+    def send_multicast(self, packet: BasePacket):
+        try:
+            serialized_packet = packet.serialize()
+            self.multicast_socket.sendto(
+                serialized_packet, (self.MULTICAST_IP, self.MULTICAST_PORT)
+            )
+        except Exception as e:
+            self.logger(f"Error sending multicast packet: {e}")
 
+    def send_broadcast(self, packet: BasePacket):
+
+        try:
+            serialized_packet = packet.serialize()
+            self.broadcast_socket.sendto(
+                serialized_packet, (self.BROADCAST_IP, self.BROADCAST_PORT)
+            )
+        except Exception as e:
+            self.logger(f"Error sending broadcast packet: {e}")
+
+    #
+    # Packet Handlers
+    def packet_handler(self, raw_packet: bytes, packet_ip: str, packet_port: int):
+
+        try:
+            packet = BasePacket.deserialize(raw_packet)
+
+            if isinstance(packet, ChatMessagePacket):
+                self.on_chat_message(
+                    packet=packet, packet_ip=packet_ip, packet_port=packet_port
+                )
+            elif isinstance(packet, NodeDiscoveryPacket):
+                self.on_node_discovery(
+                    packet=packet, packet_ip=packet_ip, packet_port=packet_port
+                )
+            elif isinstance(packet, NodeDiscoveryReplyPacket):
+                self.on_node_discovery_reply(
+                    packet=packet, packet_ip=packet_ip, packet_port=packet_port
+                )
+            elif isinstance(packet, NodeLeavePacket):
+                self.on_node_leave(
+                    packet=packet, packet_ip=packet_ip, packet_port=packet_port
+                )
+            elif isinstance(packet, LeaderElectionStartPacket):
+                self.on_leader_election(
+                    packet=packet, packet_ip=packet_ip, packet_port=packet_port
+                )
+            elif isinstance(packet, LeaderAnnouncePacket):
+                self.on_leader_announce(
+                    packet=packet, packet_ip=packet_ip, packet_port=packet_port
+                )
+            else:
+                self.logger(f"Unknown packet type: {packet.get_packet_type()}")
+        except Exception as e:
+            self.logger(f"Error processing packet: {e}")
+
+    def on_chat_message(
+        self, packet: ChatMessagePacket, packet_ip: str, packet_port: int
+    ):
         # Serialize the packet
         serialized_packet = packet.serialize()
 
-        multicast_ip, multicast_port = self.get_multicast_address(packet.recipient)
+        multicast_ip, multicast_port = self.get_multicast_address(packet.chat_group)
 
         # Send message to the multicast group
         self.multicast_socket.sendto(serialized_packet, (multicast_ip, multicast_port))
         print(f"[Multicast] Forwarded message to {multicast_ip}:{multicast_port}")
 
-    def _node_join(self, packet: JoinPacket):
-        """
-        Handle new node joining the chat.
 
-        :param packet: Join packet
-        """
+    def on_node_discovery(
+        self, packet: NodeDiscoveryPacket, packet_ip: str, packet_port: int
+    ):
+
+        if self.is_leader:
+            # Check if the server already exists in the system
+            if packet.sender_id in self.server_list:
+                if packet.sender_id == self.server_id:
+                    return
+                else:
+                    self.logger(
+                        f"Server ID: {packet.sender_id} already exists in the system."
+                    )
+                    return
+
+            self.server_list[packet.sender_id] = {
+                "UNICAST_IP": packet.unicast_ip,
+                "server_port": packet.unicast_port,
+                "is_leader": False,
+            }
+            self.logger(f"Server ID: {packet.sender_id} Joined to the system")
+
+            # Reply to the new server with the current server list
+            reply_packet = NodeDiscoveryReplyPacket(
+                sender_id=self.server_id, server_list=self.server_list
+            )
+            self.send_unicast(
+                packet=reply_packet,
+                recipient_ip=packet.unicast_ip,
+                recipient_port=packet.unicast_port,
+            )
+
+    def on_node_discovery_reply(
+        self, packet: NodeDiscoveryReplyPacket, packet_ip: str, packet_port: int
+    ):
+        # Set the event to indicate the reply is received
+        # Breaks the discovery wait loop in the thread
+        self.discovery_reply_receive.set()
+
+        if datetime.now() - self.last_discovery_request_time < timedelta(seconds=5):
+
+            self.server_list = packet.server_list
+            self.logger("Joined to the existing system, Server list updated")
+
+            # Start the leader election process
+            leader_election_start_packet = LeaderElectionStartPacket(
+                sender_id=self.server_id
+            )
+            self.send_unicast(leader_election_start_packet, packet_ip, packet_port)
+        else:
+            self.logger("Outdated discovery reply packet received")
+
+    def on_node_leave(self, packet: NodeLeavePacket, packet_ip: str, packet_port: int):
         pass
 
-    def _node_leave(self, packet: LeavePacket):
-        """
-        Handle node leaving the chat.
+    def on_leader_election(
+        self, packet: LeaderElectionStartPacket, packet_ip: str, packet_port: int
+    ):
 
-        :param packet: Leave packet
-        """
+        self.logger("Leader election process started")
+
+        # TODO: TEMPORARY
+        self.become_leader()
+
+    def on_leader_announce(
+        self, packet: LeaderAnnouncePacket, packet_ip: str, packet_port: int
+    ):
+
+        self.server_list = packet.server_list
+
+        self.logger(f"Leader announced, Server list updated: {self.server_list}")
+
+    def on_heartbeat(self):
         pass
 
-    def _leader_election(self, packet: LeaderElectionStartPacket):
-        """
-        Handle the start of leader election process.
 
-        :param packet: Leader election start packet
-        """
+
+
+    #
+    # Functionalities
+    def become_leader(self):
+        self.is_leader = True
+        for server in self.server_list.values():
+            server["is_leader"] = False
+        self.server_list[self.server_id]["is_leader"] = True
+        self.logger("Server is now the leader")
+        self.distribute_chat_groups()
+
+        leader_announce_packet = LeaderAnnouncePacket(
+            sender_id=self.server_id, server_list=self.server_list
+        )
+        self.send_broadcast(leader_announce_packet)
+
+    def send_heartbeat(self):
         pass
 
-    def _leader_announce(self, packet: LeaderAnnouncePacket):
-        """
-        Leader only
-        Handle leader announcement and chat responsibility distribution.
+    def distribute_chat_groups(self):
 
-        :param packet: Leader announce packet
-        """
-        pass
+        chat_groups = self.config["chat"]["groups"]
+        number_of_servers = len(self.server_list)
 
-    # Heartbeat Functions
-    def _heartbeat(self):
-        """
-        Send heartbeats.
+        # Distribute chat groups to servers as evenly as possible
+        server_ids = list(self.server_list.keys())
+        group_assignments = {server_id: [] for server_id in server_ids}
 
-        """
-        pass
+        for i, group in enumerate(chat_groups):
+            server_id = server_ids[i % number_of_servers]
+            group_assignments[server_id].append(group)
 
-    def _heartbeat_monitor(self):
+        # Update server list with group assignments
+        for server_id, groups in group_assignments.items():
+            self.server_list[server_id]["chat_groups"] = groups
 
-        pass
+    def logger(self, message):
 
+        # sys.stdout.write(f"{self.server_id} [{datetime.now()}] {message}\n")
+        sys.stdout.write(f"{self.server_id[:5]} || {message}\n")
+    
+    def uuid1_to_timestamp(self, uuid1):
+        # Extract the timestamp components from the UUID
+        timestamp = (uuid1.time - 0x01B21DD213814000) / 1e7  # Convert to seconds
+        # UUID epoch starts at 1582-10-15, convert to standard datetime
+        return datetime(1970, 1, 1) + timedelta(seconds=timestamp)
+
+
+    #
     # Packet Listeners
-    def _receive_broadcast_packets(self):
-        """
-        Continuous packet receiving thread.
-        """
+    def receive_broadcast_packets(self):
+
+        self.logger(f"Listening {self.BROADCAST_IP}:{self.BROADCAST_PORT}")
         while self.is_running:
             try:
-                data, address = self.broadcast_socket.recvfrom(self.BUFFER_SIZE)
-                print(f"Received data from {address}")
-                self._packet_handler(data)
+                data, addr = self.broadcast_socket.recvfrom(self.BUFFER_SIZE)
+                self.packet_handler(
+                    raw_packet=data, packet_ip=addr[0], packet_port=addr[1]
+                )
+
             except Exception as e:
-                print(f"Error receiving packet: {e}")
+                self.logger(f"Error receiving a broadcast packet: {e}")
 
-    def _receive_multicast_packets(self):
-        """
-        Continuous packet receiving thread.
-        """
-        pass
+    def receive_multicast_packets(self):
 
-    def _receive_unicast_packets(self):
-        """
-        Continuous packet receiving thread.
-        """
-        pass
+        self.logger(f"Listening {self.MULTICAST_IP}:{self.MULTICAST_PORT}")
+        while self.is_running:
+            try:
+                data, addr = self.multicast_socket.recvfrom(self.BUFFER_SIZE)
+                self.packet_handler(
+                    raw_packet=data, packet_ip=addr[0], packet_port=addr[1]
+                )
+
+            except Exception as e:
+                self.logger(f"Error receiving a multicast packet: {e}")
+
+    def receive_unicast_packets(self):
+
+        self.logger(f"Listening {self.UNICAST_IP}:{self.UNICAST_PORT}")
+        while self.is_running:
+            try:
+                data, addr = self.unicast_socket.recvfrom(self.BUFFER_SIZE)
+                self.packet_handler(
+                    raw_packet=data, packet_ip=addr[0], packet_port=addr[1]
+                )
+
+            except Exception as e:
+                self.logger(f"Error receiving a unicast packet: {e}")
 
     # Server Operations
     def start_server(self):
-        """
-        Start the server to listen for incoming packets.
-        """
+
+        self.is_running = True
+        self.logger(f"Server Started")
+
+        # Bind the broadcast socket
         try:
             # Setup Broadcast Socket
             self.broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            self.broadcast_socket.bind((self.SERVER_IP, self.BROADCAST_PORT))
-
-            # Setup Multicast Socket
-            self.multicast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-            self.multicast_socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-
-            print(f"Server is listening on {self.SERVER_IP}:{self.BROADCAST_PORT}")
-
-            self.is_running = True
-            receive_broadcast_thread = threading.Thread(target=self._receive_broadcast_packets)
-            receive_broadcast_thread.start()
-            receive_broadcast_thread.join()
-
+            self.broadcast_socket.bind((self.BROADCAST_IP, self.BROADCAST_PORT))
         except Exception as e:
-            print(f"Server startup error: {e}")
-        finally:
-            if self.broadcast_socket:
-                self.broadcast_socket.close()
-            if self.multicast_socket:
-                self.multicast_socket.close()
+            self.logger(f"Broadcast port binding error: {e}")
+
+        # Bind the multicast socket
+        try:
+            self.multicast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.multicast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.multicast_socket.bind((self.MULTICAST_IP, self.MULTICAST_PORT))
+        except Exception as e:
+            self.logger(f"Multicast port binding error: {e}")
+
+        # Bind the unicast socket
+        try:
+            self.unicast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.unicast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.unicast_socket.bind((self.UNICAST_IP, self.UNICAST_PORT))
+        except Exception as e:
+            self.logger(f"Unicast port binding error: {e}")
+
+        # Start the broadcast listening thread
+        try:
+            receive_broadcast_thread = threading.Thread(
+                target=self.receive_broadcast_packets
+            )
+
+            receive_broadcast_thread.start()
+        except Exception as e:
+            self.logger(f"Broadcast listening thread error: {e}")
+
+        # Start the multicast listening thread
+        try:
+            receive_multicast_thread = threading.Thread(
+                target=self.receive_multicast_packets
+            )
+
+            receive_multicast_thread.start()
+        except Exception as e:
+            self.logger(f"Multicast listening thread error: {e}")
+
+        # Start the unicast listening thread
+        try:
+            receive_unicast_thread = threading.Thread(
+                target=self.receive_unicast_packets
+            )
+
+            receive_unicast_thread.start()
+        except Exception as e:
+            self.logger(f"Unicast listening thread error: {e}")
+
+        # Broadcast the discovery message
+        discovery_packet = NodeDiscoveryPacket(
+            sender_id=self.server_id,
+            unicast_ip=self.UNICAST_IP,
+            unicast_port=self.UNICAST_PORT,
+        )
+        self.send_broadcast(discovery_packet)
+        self.last_discovery_request_time = datetime.now()
+
+        # Start the discovery wait thread
+        try:
+            timeout_thread = threading.Thread(target=self.discovery_reply_wait)
+            timeout_thread.start()
+        except Exception as e:
+            self.logger(f"Discovery wait thread error: {e}")
+
+    def discovery_reply_wait(self):
+        self.logger("Waiting for existing systems in the network")
+        start_time = datetime.now()
+        while True:
+            if datetime.now() - start_time > timedelta(seconds=self.DISCOVERY_TIMEOUT):
+                self.logger("No existing system found in the network")
+                self.become_leader()
+                break
+            if self.discovery_reply_receive.is_set():
+                self.logger("Existing system found in the network")
+                break
 
     def stop_server(self):
-        """
-        Gracefully stop the server.
-        """
+
         self.is_running = False
         if self.broadcast_socket:
             self.broadcast_socket.close()
@@ -287,13 +491,11 @@ class ChatServer:
         # TODO: What happens if we use TCP?
         if self.unicast_socket:
             self.unicast_socket.close()
-        print("Server stopped.")
+        self.logger("Server stopped.")
 
 
 def main():
-    """
-    Main function to run the chat server.
-    """
+
     server = ChatServer()
     try:
         server.start_server()
