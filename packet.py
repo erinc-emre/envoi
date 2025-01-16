@@ -82,6 +82,10 @@ class NodeLeavePacket(BasePacket):
 # Unicast packet
 class LeaderElectionStartPacket(BasePacket):
 
+    def __init__(self, sender_id: str, server_list: dict):
+        super().__init__(sender_id)
+        self.server_list = server_list
+
     def get_packet_type(self) -> str:
         return type(self).__name__
 
@@ -101,3 +105,13 @@ class LeaderAnnouncePacket(BasePacket):
 
     def __str__(self):
         return f"{super().__str__()} announced new leader: {self.leader_id}"
+
+
+# Unicast packet
+class HeartbeatPacket(BasePacket):
+
+    def get_packet_type(self) -> str:
+        return type(self).__name__
+
+    def __str__(self):
+        return f"{super().__str__()} || Heartbeat"

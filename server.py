@@ -20,6 +20,7 @@ from packet import (
     NodeLeavePacket,
     LeaderElectionStartPacket,
     LeaderAnnouncePacket,
+    HeartbeatPacket,
 )
 
 
@@ -74,15 +75,15 @@ class ChatServer:
         # Servers in the network
         self.server_list = {
             self.server_id: {
-                "UNICAST_IP": self.UNICAST_IP,
-                "server_port": self.UNICAST_PORT,
+                "unicast_ip": self.UNICAST_IP,
+                "unicast_port": self.UNICAST_PORT,
                 "is_leader": self.is_leader,
                 "chat_groups": [],
             },
         }
 
-        # self.logical_ring = self.build_logical_ring(self.server_list)
-        # print(self.logical_ring)
+        # Heartbeat
+        self.last_seen_heartbeat = datetime.now()
 
     #
     # Configuration
@@ -166,6 +167,10 @@ class ChatServer:
                 self.on_leader_announce(
                     packet=packet, packet_ip=packet_ip, packet_port=packet_port
                 )
+            elif isinstance(packet, HeartbeatPacket):
+                self.on_heartbeat(
+                    packet=packet, packet_ip=packet_ip, packet_port=packet_port
+                )
             else:
                 self.logger(f"Unknown packet type: {packet.get_packet_type()}")
         except Exception as e:
@@ -197,8 +202,8 @@ class ChatServer:
                     return
 
             self.server_list[packet.sender_id] = {
-                "UNICAST_IP": packet.unicast_ip,
-                "server_port": packet.unicast_port,
+                "unicast_ip": packet.unicast_ip,
+                "unicast_port": packet.unicast_port,
                 "is_leader": False,
             }
             self.logger(f"Server ID: {packet.sender_id} Joined to the system")
@@ -227,7 +232,7 @@ class ChatServer:
 
             # Start the leader election process
             leader_election_start_packet = LeaderElectionStartPacket(
-                sender_id=self.server_id
+                sender_id=self.server_id, server_list=self.server_list
             )
             self.send_unicast(leader_election_start_packet, packet_ip, packet_port)
         else:
@@ -241,6 +246,7 @@ class ChatServer:
     ):
 
         self.logger("Leader election process started")
+        self.server_list = packet.server_list
 
         # TODO: TEMPORARY
         self.become_leader()
@@ -253,8 +259,8 @@ class ChatServer:
 
         self.logger(f"Leader announced, Server list updated: {self.server_list}")
 
-    def on_heartbeat(self):
-        pass
+    def on_heartbeat(self, packet: HeartbeatPacket, packet_ip: str, packet_port: int):
+        self.last_seen_heartbeat = datetime.now()
 
     #
     # Functionalities
@@ -270,9 +276,6 @@ class ChatServer:
             sender_id=self.server_id, server_list=self.server_list
         )
         self.send_broadcast(leader_announce_packet)
-
-    def send_heartbeat(self):
-        pass
 
     def distribute_chat_groups(self):
 
@@ -344,20 +347,28 @@ class ChatServer:
             self.config["chat"]["groups"][user_group]["multicast_port"],
         )
 
-    def build_logical_ring(self, server_list):
-        server_ids = list(server_list.keys())
-        logical_ring = {server_id: None for server_id in server_ids}
-        for i, server_id in enumerate(server_ids):
-            if i == 0:
-                logical_ring[server_id] = (server_ids[-1], server_ids[i + 1])
-            elif i == len(server_ids) - 1:
-                logical_ring[server_id] = (server_ids[i - 1], server_ids[0])
-            else:
-                logical_ring[server_id] = (server_ids[i - 1], server_ids[i + 1])
-        return logical_ring
+    def get_right_logical_server(self):
+        keys = list(self.server_list.keys())
+        if self.server_id not in keys:
+            raise ValueError("Current server ID not found in data.")
+
+        current_index = keys.index(self.server_id)
+        next_index = (current_index + 1) % len(
+            keys
+        )  # Modulo to wrap around to the first key
+        return keys[next_index]
+
+    def get_left_logical_server(self):
+        keys = list(self.server_list.keys())
+        if self.server_id not in keys:
+            raise ValueError("Current server ID not found in data.")
+
+        current_index = keys.index(self.server_id)
+        next_index = (current_index - 1) % len(keys)
+        return keys[next_index]
 
     #
-    # Packet Listeners
+    # Threads
     def receive_broadcast(self):
 
         self.logger(f"Listening {self.BROADCAST_IP}:{self.BROADCAST_PORT}")
@@ -383,6 +394,74 @@ class ChatServer:
 
             except Exception as e:
                 self.logger(f"Error receiving a unicast packet: {e}")
+
+    def discovery_reply_wait(self):
+        self.logger("Waiting for existing systems in the network")
+        start_time = datetime.now()
+        while True:
+            if datetime.now() - start_time > timedelta(seconds=self.DISCOVERY_TIMEOUT):
+                self.logger("No existing system found in the network")
+                self.become_leader()
+                break
+            if self.discovery_reply_receive.is_set():
+                self.logger("Existing system found in the network")
+                break
+
+    def send_heartbeat(self):
+        heartbeat_packet = HeartbeatPacket(sender_id=self.server_id)
+        while self.is_running:
+
+            try:
+                self.send_unicast(
+                    packet=heartbeat_packet,
+                    recipient_ip=self.server_list[self.get_right_logical_server()][
+                        "unicast_ip"
+                    ],
+                    recipient_port=self.server_list[self.get_right_logical_server()][
+                        "unicast_port"
+                    ],
+                )
+            except Exception as e:
+                self.logger(f"Error sending heartbeat: {e}")
+            time.sleep(self.config["network"]["HEARTBEAT_INTERVAL"])
+            self.logger(f"Heartbeat sent to {self.get_right_logical_server()}")
+
+    def monitor_heartbeat(self):
+        while self.is_running:
+            if datetime.now() - self.last_seen_heartbeat > timedelta(
+                seconds=self.config["network"]["HEARTBEAT_TIMEOUT"]
+            ):
+                self.logger(
+                    f"Heartbeat timeout, server {self.get_left_logical_server()} is down."
+                )
+
+                # Give the server some time to recover
+                self.last_seen_heartbeat = datetime.now()
+
+                dead_server_id = self.get_left_logical_server()
+                if len(self.server_list) == 2:
+
+                    self.server_list.pop(dead_server_id)
+                    self.logger(f"Server {dead_server_id} removed from the system")
+
+                    self.become_leader()
+                else:
+
+                    self.server_list.pop(dead_server_id)
+                    leader_election_start_packet = LeaderElectionStartPacket(
+                        sender_id=self.server_id, server_list=self.server_list
+                    )
+                    self.send_unicast(
+                        packet=leader_election_start_packet,
+                        recipient_ip=self.server_list[self.get_right_logical_server()][
+                            "unicast_ip"
+                        ],
+                        recipient_port=self.server_list[
+                            self.get_right_logical_server()
+                        ]["unicast_port"],
+                    )
+
+                time.sleep(1)
 
     #
     # Server Operations
@@ -470,17 +549,19 @@ class ChatServer:
         except Exception as e:
             self.logger(f"Discovery wait thread error: {e}")
 
-    def discovery_reply_wait(self):
-        self.logger("Waiting for existing systems in the network")
-        start_time = datetime.now()
-        while True:
-            if datetime.now() - start_time > timedelta(seconds=self.DISCOVERY_TIMEOUT):
-                self.logger("No existing system found in the network")
-                self.become_leader()
-                break
-            if self.discovery_reply_receive.is_set():
-                self.logger("Existing system found in the network")
-                break
+        # Heartbeat sending thread
+        try:
+            heartbeat_thread = threading.Thread(target=self.send_heartbeat)
+            heartbeat_thread.start()
+        except Exception as e:
+            self.logger(f"Heartbeat thread error: {e}")
+
+        # Heartbeat monitoring thread
+        try:
+            heartbeat_monitor_thread = threading.Thread(target=self.monitor_heartbeat)
+            heartbeat_monitor_thread.start()
+        except Exception as e:
+            self.logger(f"Heartbeat monitor thread error: {e}")
 
     def stop_server(self):
 
