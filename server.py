@@ -5,6 +5,9 @@ from typing import Dict, Any, Optional
 import subprocess
 import uuid
 import platform
+import sys
+import queue
+import time
 
 from packet import (
     BasePacket,
@@ -13,6 +16,7 @@ from packet import (
     LeavePacket,
     LeaderElectionStartPacket,
     LeaderAnnouncePacket,
+    AckPacket,
 )
 
 
@@ -28,6 +32,14 @@ class ChatServer:
 
         :param config_path: Path to the configuration JSON file
         """
+        
+        
+        # Track sequence numbers and acknowledgments
+        self.acks= {} #used for storing ack messages recived in case of retranmission 
+        self.timeout = 5 
+        self.seq_num=0
+        self.message_queue = []
+
         # Load configuration
         self.config = self._load_config(config_path)
 
@@ -170,9 +182,12 @@ class ChatServer:
 
         multicast_ip, multicast_port = self.get_multicast_address(packet.recipient)
 
-        # Send message to the multicast group
+        print(f"[Multicast] Forwarded message to {multicast_ip}:{multicast_port}") 
+        
+        # Initial send
         self.multicast_socket.sendto(serialized_packet, (multicast_ip, multicast_port))
-        print(f"[Multicast] Forwarded message to {multicast_ip}:{multicast_port}")
+       
+
 
     def _node_join(self, packet: JoinPacket):
         """
@@ -236,8 +251,69 @@ class ChatServer:
         """
         Continuous packet receiving thread.
         """
-        pass
+        """
+        Listens for multicast messages from group members.
+        This function will handle incoming messages from clients, process them, and ensure sequence ordering.
+        """
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
+            # Bind to the multicast port
+            sock.bind(("", self.MULTICAST_PORT))
+            #the socket can receive multicast packets sent to any interface
+
+            # Join the multicast group
+            mreq = socket.inet_aton(self.MULTICAST_IP) + socket.inet_aton("0.0.0.0")
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+
+            while self.is_running:
+                try:
+                    data, addr = sock.recvfrom(self.BUFFER_SIZE)
+                    print(f"[Info] Received multicast message from {addr}")
+
+                    # Deserialize the packet
+                    packet = MessagePacket.deserialize(data)
+                    self.process_received_message(packet)
+                except Exception as e:
+                    print(f"[Error] Failed to receive multicast packet: {e}")
+                    break
+    def process_received_message (self, packet: MessagePacket):
+        self.message_queue.append(packet)
+
+    def process_ack (self, packet: MessagePacket):
+        seq_num= packet.seq_num
+        if seq_num not in self.acks:
+            self.acks[seq_num]= set()
+        self.acks[seq_num].add(packet.sender)
+
+        group_members = self.config["chat"]["groups"][self.current_group_id]["users"]
+
+        if len (self.acks[seq_num])==len(group_members):
+            # All clients have acknowledged, remove the message and send the next one
+            message_packet = next((msg for msg in self.message_queue if msg.seq_num == seq_num), None)
+            if message_packet:
+                self.message_queue.remove(message_packet)
+                print(f"Message with seq_num {seq_num} removed from queue.")
+                self.send_next_message()
+        else: 
+            self.retransmit_message()
+    def send_next_message(self, packet:MessagePacket):
+        """
+        Sends the next message in the queue and removes processed messages.
+        """
+        
+        # Now send the next message (if any) in the message queue
+        if self.message_queue:
+            next_message = self.message_queue.pop(0)  # Get the next message in line
+            print(f"Sending next message with seq_num {next_message.seq_num}")
+            self.send_packet(next_message)
+            
+    def retransmit_message(self, seq_num):
+        message_packet = next((msg for msg in self.message_queue if msg.seq_num == seq_num), None)
+        if message_packet:
+            print(f"Retransmitting message with seq_num {seq_num}")
+            self.send_packet(message_packet)
+   
     def _receive_unicast_packets(self):
         """
         Continuous packet receiving thread.
@@ -259,13 +335,20 @@ class ChatServer:
             # Setup Multicast Socket
             self.multicast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
             self.multicast_socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-
+            self.multicast_socket.bind ((self.SERVER_IP, self.MULTICAST_PORT))
+             # Join multicast group
+            #mreq = socket.inet_aton(self.MULTICAST_IP) + socket.inet_aton("0.0.0.0")
+            #self.multicast_socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
             print(f"Server is listening on {self.SERVER_IP}:{self.BROADCAST_PORT}")
 
             self.is_running = True
             receive_broadcast_thread = threading.Thread(target=self._receive_broadcast_packets)
             receive_broadcast_thread.start()
-            receive_broadcast_thread.join()
+            #receive_broadcast_thread.join()
+
+            receive_multicast_thread = threading.Thread(target=self._receive_broadcast_packets)
+            receive_multicast_thread.start()
+            #receive_multicast_thread.join()
 
         except Exception as e:
             print(f"Server startup error: {e}")

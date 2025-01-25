@@ -1,9 +1,11 @@
 import socket
 import json
 import threading
+import time
 from packet import (
     BasePacket,
     MessagePacket,
+    AckPacket,
 )
 
 class ChatClient:
@@ -22,6 +24,9 @@ class ChatClient:
         self.group_id = self.get_group(self.client_id)
         self.is_running = True
         self.update_multicast_address(self.group_id)
+        #self.seq_num = 0  # Initialize the sequence number
+        # Lock for thread safety
+        self.lock = threading.Lock()
 
     def _load_config(self, config_path: str):
         """
@@ -36,15 +41,18 @@ class ChatClient:
     def send_packet(self, packet):
         """
         Sends a serialized packet via UDP broadcast.
+        *update: need to use multicast here, previously it was broadcast
 
         :param packet: The BasePacket object to send.
         """
+    
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client_socket:
-            client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             serialized_packet = packet.serialize()
-            client_socket.sendto(serialized_packet, (self.BROADCAST_IP, self.BROADCAST_PORT))
-            print(f"Sent {packet.get_packet_type()} packet to {self.BROADCAST_IP}:{self.BROADCAST_PORT}")
+            client_socket.sendto(serialized_packet, (self.MULTICAST_IP, self.MULTICAST_PORT))
+            print(f"Sent {packet.get_packet_type()} packet to {self.MULTICAST_IP}:{self.MULTICAST_PORT}")
 
+        
+    
     def authenticate(self):
         found_user = None
         while found_user is None:
@@ -95,6 +103,27 @@ class ChatClient:
                     print(f"[Error] Multicast reception failed: {e}")
                     break
 
+    def process_message_packet(self, packet: MessagePacket):
+        """
+        Processes received message packets.
+        """
+        print(f"[Message Received] {packet}")
+        # Directly handle sending the acknowledgment
+        ack_packet = AckPacket(sender=self.client_id, recipient=packet.sender, seq_num=packet.seq_num)
+        self.send_ack(ack_packet)
+
+    def send_ack (self, packet: MessagePacket):
+        # Send ACK packet using unicast to the server (you'll need to specify the server's IP and port)
+        server_ip = self.config["network"][server_ip]  # Replace with the server's IP
+        server_port = self.config["network"]["UNICAST_PORT"]
+        #not sure if i need the above lines? 
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client_socket:
+            serialized_packet = packet.serialize()
+            client_socket.sendto(serialized_packet, (server_ip, server_port))
+            print(f"Sent ACK packet with seq_num {packet.seq_num} to {server_ip}:{server_port}")
+
+        
+        
     def start_client(self):
         """
         Starts the client to send and receive messages.
@@ -102,7 +131,9 @@ class ChatClient:
         print("Welcome to the Chat App.")
         print("You are running as a client.")
         receive_thread = threading.Thread(target=self.receive_multicast, daemon=True)
+        #retransmit_thread = threading.Thread(target=self.retransmit_packets, daemon=True)
         receive_thread.start()
+        #retransmit_thread.start()
         try:
             while self.is_running:
                 input_message = input("\n[Input] Type your message: ")
@@ -110,7 +141,7 @@ class ChatClient:
                     print("[Info] Exiting...")
                     self.is_running = False
                     break
-                packet = MessagePacket(sender=self.client_id, recipient=self.group_id, message=input_message)
+                packet = MessagePacket(sender=self.client_id, recipient=self.group_id, message=input_message, seq_num=self.seq_num,)
                 self.send_packet(packet)
         except KeyboardInterrupt:
             print("\nClient stopped.")
