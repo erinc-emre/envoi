@@ -24,7 +24,6 @@ class ChatClient:
         self.group_id = self.get_group(self.client_id)
         self.is_running = True
         self.update_multicast_address(self.group_id)
-        #self.seq_num = 0  # Initialize the sequence number
         # Lock for thread safety
         self.lock = threading.Lock()
 
@@ -109,7 +108,7 @@ class ChatClient:
         """
         print(f"[Message Received] {packet}")
         # Directly handle sending the acknowledgment
-        ack_packet = AckPacket(sender=self.client_id, recipient=packet.sender, seq_num=packet.seq_num)
+        ack_packet = AckPacket(sender=self.client_id, recipient=packet.sender)
         self.send_ack(ack_packet)
 
     def send_ack (self, packet: MessagePacket):
@@ -120,7 +119,7 @@ class ChatClient:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client_socket:
             serialized_packet = packet.serialize()
             client_socket.sendto(serialized_packet, (server_ip, server_port))
-            print(f"Sent ACK packet with seq_num {packet.seq_num} to {server_ip}:{server_port}")
+            print(f"Sent ACK packet to {server_ip}:{server_port}")
 
         
         
@@ -141,7 +140,7 @@ class ChatClient:
                     print("[Info] Exiting...")
                     self.is_running = False
                     break
-                packet = MessagePacket(sender=self.client_id, recipient=self.group_id, message=input_message, seq_num=self.seq_num,)
+                packet = MessagePacket(sender=self.client_id, recipient=self.group_id, message=input_message)
                 self.send_packet(packet)
         except KeyboardInterrupt:
             print("\nClient stopped.")

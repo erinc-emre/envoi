@@ -39,6 +39,10 @@ class ChatServer:
         self.timeout = 5 
         self.seq_num=0
         self.message_queue = []
+        #locks for shared resources 
+        self.seq_num_lock = threading.Lock()
+        self.message_queue_lock = threading.Lock()
+        self.acks_lock = threading.Lock()
 
         # Load configuration
         self.config = self._load_config(config_path)
@@ -164,6 +168,9 @@ class ChatServer:
                 self._leader_election(packet)
             elif isinstance(packet, LeaderAnnouncePacket):
                 self._leader_announce(packet)
+            elif isinstance(packet, AckPacket):
+                self._ack_packet(packet)
+                #added here 
             else:
                 print(f"Unknown packet type: {packet.get_packet_type()}")
         except Exception as e:
@@ -175,19 +182,18 @@ class ChatServer:
 
         :param packet: Message packet
         """
-        print(f"[Message] {packet.sender} -> {packet.recipient}: {packet.message}")
-
-        # Serialize the packet
-        serialized_packet = packet.serialize()
+        with self.seq_num_lock:
+            packet.seq_num= self.seq_num
+            # Serialize the packet
+            serialized_packet = packet.serialize()
+            self.seq_num += 1
 
         multicast_ip, multicast_port = self.get_multicast_address(packet.recipient)
-
+        print(f"[Message] {packet.sender} -> {packet.recipient}: {packet.message} (seq_num={self.seq_num})")
         print(f"[Multicast] Forwarded message to {multicast_ip}:{multicast_port}") 
-        
         # Initial send
         self.multicast_socket.sendto(serialized_packet, (multicast_ip, multicast_port))
-       
-
+        
 
     def _node_join(self, packet: JoinPacket):
         """
@@ -277,38 +283,68 @@ class ChatServer:
                 except Exception as e:
                     print(f"[Error] Failed to receive multicast packet: {e}")
                     break
-    def process_received_message (self, packet: MessagePacket):
-        self.message_queue.append(packet)
+    #recieving message packets from clients and putting them into the FIFO queue 
+    def process_received_message (self, packet:MessagePacket):
+        with self.message_queue_lock:
+            self.message_queue.append(packet)
 
     def process_ack (self, packet: MessagePacket):
         seq_num= packet.seq_num
-        if seq_num not in self.acks:
-            self.acks[seq_num]= set()
-        self.acks[seq_num].add(packet.sender)
+        with seq_num_lock:
+            if seq_num not in self.acks:
+                self.acks[seq_num]= set()
+            self.acks[seq_num].add(packet.sender)
 
         group_members = self.config["chat"]["groups"][self.current_group_id]["users"]
 
         if len (self.acks[seq_num])==len(group_members):
-            # All clients have acknowledged, remove the message and send the next one
             message_packet = next((msg for msg in self.message_queue if msg.seq_num == seq_num), None)
-            if message_packet:
-                self.message_queue.remove(message_packet)
+            # All clients have acknowledged, remove the message and send the next one
+            with self.message_queue_lock:
+                if message_packet:
+                    self.message_queue.remove(message_packet)
                 print(f"Message with seq_num {seq_num} removed from queue.")
                 self.send_next_message()
         else: 
-            self.retransmit_message()
-    def send_next_message(self, packet:MessagePacket):
+            self.retransmit_message(seq_num)
+    def send_next_message(self):
         """
         Sends the next message in the queue and removes processed messages.
         """
-        
-        # Now send the next message (if any) in the message queue
-        if self.message_queue:
-            next_message = self.message_queue.pop(0)  # Get the next message in line
+        with self.message_queue_lock:
+            # Now send the next message (if any) in the message queue
+            if self.message_queue:
+                self.message_queue.sort(key=lambda msg: msg.seq_num)
+                next_message = self.message_queue.pop(0)  # Get the next message in line
+        if next_message:
             print(f"Sending next message with seq_num {next_message.seq_num}")
-            self.send_packet(next_message)
-            
+            with self.acks_lock:    
+                self.send_packet(next_message)
+
+    def send_packet (self, packet: MessagePacket):
+        """
+    Serialize and send the packet using the appropriate socket.
+
+    :param packet: The message packet to send
+    """
+    try:
+        # Serialize the packet to bytes
+        serialized_packet = packet.serialize()
+
+        # Get the multicast address for the group
+        multicast_ip, multicast_port = self.get_multicast_address(packet.recipient)
+        if not self.multicast_socket:
+            raise RuntimeError("Multicast socket is not initialized.")
+        
+        self.multicast_socket.sendto(serialized_packet, (multicast_ip, multicast_port))
+
+        print(f"Sent multicast packet with seq_num {packet.seq_num} to {multicast_ip}:{multicast_port}")
+    except Exception as e:
+        print(f"Error sending packet: {e}")
+
     def retransmit_message(self, seq_num):
+        #prevent ending too many messgaes at once 
+        time.sleep(1)
         message_packet = next((msg for msg in self.message_queue if msg.seq_num == seq_num), None)
         if message_packet:
             print(f"Retransmitting message with seq_num {seq_num}")

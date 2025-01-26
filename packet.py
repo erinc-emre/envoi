@@ -23,6 +23,7 @@ class BasePacket(ABC):
         self.sender = sender
         self.recipient = recipient
         self.timestamp = datetime.datetime.now()
+        self.is_ack = is_ack
 
         print(self.timestamp)
 
@@ -51,8 +52,6 @@ class BasePacket(ABC):
         
         :return: Formatted string describing the packet
         """
-        return f"[{self.timestamp}] {self.sender} -> {self.recipient}"
-
 
 class MessagePacket(BasePacket):
     """
@@ -70,6 +69,7 @@ class MessagePacket(BasePacket):
         self.message = message
     
     def get_packet_type(self) -> str:
+
         return type(self).__name__
     
     def __str__(self):
@@ -80,7 +80,30 @@ class MessagePacket(BasePacket):
         """
         return f"{super().__str__()}: {self.message}"
 
+class AckPacket(BasePacket):
+    """
+    Packet for acknowledging received packets
+    """
+    def __init__(self, sender: str, recipient: str, seq_num: int):
+        """
+        Initialize an acknowledgment packet
 
+        :param sender: Sender of the acknowledgment
+        :param recipient: Recipient of the acknowledgment
+        :param seq_num: Sequence number of the acknowledged packet
+        """
+        super().__init__(sender, recipient)
+
+    def get_packet_type(self) -> str:
+        return type(self).__name__
+
+    def __str__(self):
+        """
+        String representation of the acknowledgment packet
+
+        :return: Formatted string describing the acknowledgment
+        """
+        return f"{super().__str__()} (Acknowledged)"
 class JoinPacket(BasePacket):
     """
     Packet for user join events
