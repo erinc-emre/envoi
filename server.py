@@ -476,7 +476,11 @@ class ChatServer:
             self.broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            self.broadcast_socket.bind((self.BROADCAST_IP, self.BROADCAST_PORT))
+
+            if platform.system() == "Windows":
+                self.broadcast_socket.bind(("0.0.0.0", self.BROADCAST_PORT))
+            else:
+                self.broadcast_socket.bind((self.BROADCAST_IP, self.BROADCAST_PORT))
         except Exception as e:
             self.logger(f"Broadcast port binding error: {e}")
 
@@ -486,11 +490,13 @@ class ChatServer:
             self.multicast_socket = socket.socket(
                 socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP
             )
-            self.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
-                self.multicast_socket.setsockopt(
-                    socket.SOL_SOCKET, socket.SO_REUSEPORT, 1
-                )  # Optional, may not be available on all systems
+                if platform.system() == "Windows":
+                    self.multicast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                else:
+                    self.multicast_socket.setsockopt(
+                        socket.SOL_SOCKET, socket.SO_REUSEPORT, 1
+                    )  # Optional, may not be available on all systems
             except AttributeError:
                 print(
                     "SO_REUSEPORT is not supported on this system. Continuing without it."
@@ -506,7 +512,6 @@ class ChatServer:
 
         except Exception as e:
             self.logger(f"Multicast port binding error: {e}")
-        finally:
             self.multicast_socket.close()
 
         # Bind the unicast socket

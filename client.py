@@ -35,9 +35,6 @@ class ChatClient:
         self.MULTICAST_PORT = self.config["chat"]["groups"][self.group_id][
             "multicast_port"
         ]
-        self.vector_clock = {
-            user_id: 0 for user_id in self.config["chat"]["users"].keys()
-        }
 
     #
     # Packet Sending
@@ -105,7 +102,7 @@ class ChatClient:
 
     def print_message(self, message):
         # TODO: Pretty print the message to the console
-        print(message)
+        print("\n" + str(message))
 
     #
     # Packet Listeners
