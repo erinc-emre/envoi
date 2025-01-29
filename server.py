@@ -21,6 +21,7 @@ from packet import (
     LeaderElectionStartPacket,
     LeaderAnnouncePacket,
     HeartbeatPacket,
+    SequenceId
 )
 
 
@@ -81,6 +82,9 @@ class ChatServer:
                 "chat_groups": [],
             },
         }
+
+        # sequence_ids for each group chats
+        self.chat_group_sequence_id = {}
 
         # Heartbeat
         self.last_seen_heartbeat = datetime.now()
@@ -182,6 +186,7 @@ class ChatServer:
         if not self.is_responsible_for_chat_group(packet.chat_group):
             return
         multicast_ip, multicast_port = self.get_multicast_group_addr(packet.chat_group)
+        self.add_sequence_id_to_chat_message(packet)
 
         # Forward message to the multicast group
         self.send_multicast(packet, multicast_ip, multicast_port)
@@ -344,6 +349,14 @@ class ChatServer:
 
     def is_responsible_for_chat_group(self, chat_group):
         return chat_group in self.server_list[self.server_id]["chat_groups"]
+
+    def add_sequence_id_to_chat_message(self, packet: ChatMessagePacket):
+        chat_group = packet.chat_group
+        if chat_group not in self.chat_group_sequence_id:
+            self.chat_group_sequence_id[chat_group] = 0
+        packet.add_seq_id(SequenceId(self.server_id, self.chat_group_sequence_id[chat_group]))
+        self.chat_group_sequence_id[chat_group] += 1
+
 
     def get_multicast_group_addr(self, user_group):
         return (
