@@ -179,7 +179,8 @@ class ChatServer:
     def on_chat_message(
         self, packet: ChatMessagePacket, packet_ip: str, packet_port: int
     ):
-
+        if not self.is_responsible_for_chat_group(packet.chat_group):
+            return
         multicast_ip, multicast_port = self.get_multicast_group_addr(packet.chat_group)
 
         # Forward message to the multicast group
@@ -340,6 +341,9 @@ class ChatServer:
         else:
             self.logger("Unsupported OS.")
             return None
+
+    def is_responsible_for_chat_group(self, chat_group):
+        return chat_group in self.server_list[self.server_id]["chat_groups"]
 
     def get_multicast_group_addr(self, user_group):
         return (
