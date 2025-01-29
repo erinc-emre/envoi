@@ -1,172 +1,103 @@
 import socket
 import json
-import sys
-import uuid
 import threading
 from packet import BasePacket, ChatMessagePacket
+from console_printer import ConsolePrinter
 
 
-# TODO: Move sockets in to class, dont keep inside functions
-# TODO: Close sockets properly on exit
-# TODO: Pretty print the message to the console
+class ConfigLoader:
+    @staticmethod
+    def load(config_path="config.json"):
+        try:
+            with open(config_path, "r") as config_file:
+                return json.load(config_file)
+        except FileNotFoundError:
+            ConsolePrinter.error("Configuration file not found.")
+            exit(1)
+        except json.JSONDecodeError:
+            ConsolePrinter.error("Error parsing configuration file.")
+            exit(1)
 
 
 class ChatClient:
-
-    #
-    # Initialization
-    def __init__(self, config_path: str = "config.json"):
-        """
-        Initialize the client with configuration.
-
-        :param config_path: Path to the configuration JSON file
-        """
-        self.config = self.load_config(config_path)
-        self.BROADCAST_IP = self.config["network"]["BROADCAST_IP"]
-        self.BROADCAST_PORT = self.config["network"]["BROADCAST_PORT"]
-        self.BUFFER_SIZE = self.config["network"]["BUFFER_SIZE"]
-        self.client_id = str(uuid.uuid1())
-        self.user_id = self.authenticate()
-        self.user_data = self.config["chat"]["users"][self.user_id]
-        self.group_id = self.get_group_id(self.user_id)
+    def __init__(self, config_path="config.json"):
+        self.config = ConfigLoader.load(config_path)
         self.is_running = True
+        self.initialize_network()
+        self.authenticate()
 
-        self.MULTICAST_IP = self.config["chat"]["groups"][self.group_id]["multicast_ip"]
-        self.MULTICAST_PORT = self.config["chat"]["groups"][self.group_id][
-            "multicast_port"
-        ]
-
-    #
-    # Packet Sending
-    def send_broadcast(self, packet):
-        """
-        Sends a serialized packet via UDP broadcast.
-
-        :param packet: The BasePacket object to send.
-        """
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client_socket:
-            client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            serialized_packet = packet.serialize()
-            client_socket.sendto(
-                serialized_packet, (self.BROADCAST_IP, self.BROADCAST_PORT)
-            )
-            self.logger(
-                f"Sent {packet.get_packet_type()} packet to {self.BROADCAST_IP}:{self.BROADCAST_PORT}"
-            )
-
-    #
-    # Functionalities
-    def logger(self, message):
-
-        # sys.stdout.write(f"{self.user_id} [{datetime.now()}] {message}\n")
-        sys.stdout.write(f"{self.client_id} || {message}\n")
-
-    def load_config(self, config_path: str):
-        """
-        Loads the configuration from a JSON file.
-
-        :param config_path: Path to the configuration file
-        :return: A dictionary containing the configuration parameters
-        """
-        with open(config_path, "r") as config_file:
-            return json.load(config_file)
+    def initialize_network(self):
+        network_config = self.config.get("network", {})
+        self.BROADCAST_IP = network_config.get("BROADCAST_IP", "255.255.255.255")
+        self.BROADCAST_PORT = network_config.get("BROADCAST_PORT", 5000)
+        self.BUFFER_SIZE = network_config.get("BUFFER_SIZE", 1024)
 
     def authenticate(self):
-        try:
-            while True:
-                user_id_input = input("Please enter your user ID (e.g., @david99): ")
-                if user_id_input in self.config["chat"]["users"].keys():
-                    self.logger(f"User ID {user_id_input} authenticated.")
-                    return user_id_input
-                else:
-                    print("User ID not found. Please try again.")
-                    self.logger("Wrong user ID entered.")
-        except KeyboardInterrupt:
-            print("\nAuthentication stopped.")
-            self.logger("Authentication stopped.")
-            exit()
+        while self.is_running:
+            user_id_input = input("Please enter your user ID (e.g., @david99): ")
+            if user_id_input in self.config.get("chat", {}).get("users", {}):
+                self.user_id = user_id_input
+                ConsolePrinter.info(f"User ID {user_id_input} authenticated.")
+                self.group_id = self.get_group_id()
+                if self.group_id:
+                    self.setup_multicast()
+                    return
+                ConsolePrinter.error("You are not part of any group.")
+            else:
+                ConsolePrinter.warning("User ID not found. Please try again.")
 
-    def get_group_id(self, user_id):
-        """
-        Retrieves the group ID for the given user ID.
-
-        :param user_id: The user ID to look up
-        :return: The group ID the user belongs to, or None if not found
-        """
-        for group_id, group_info in self.config["chat"]["groups"].items():
-            if user_id in group_info["users"]:
-                self.print_message(f"You are part of the group: {group_id}")
+    def get_group_id(self):
+        for group_id, group_info in self.config.get("chat", {}).get("groups", {}).items():
+            if self.user_id in group_info.get("users", []):
+                ConsolePrinter.info(f"You are part of the group: {group_id}")
                 return group_id
-        self.print_message("You are not part of any group.")
         return None
 
-    def print_message(self, message):
-        # TODO: Pretty print the message to the console
-        print("\n" + str(message))
+    def setup_multicast(self):
+        group_info = self.config["chat"]["groups"][self.group_id]
+        self.MULTICAST_IP = group_info["multicast_ip"]
+        self.MULTICAST_PORT = group_info["multicast_port"]
 
-    #
-    # Packet Listeners
+    def send_broadcast(self, packet):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client_socket:
+            client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            client_socket.sendto(packet.serialize(), (self.BROADCAST_IP, self.BROADCAST_PORT))
+            ConsolePrinter.info(f"Sent {packet.get_packet_type()} packet to {self.BROADCAST_IP}:{self.BROADCAST_PORT}")
+
     def receive_multicast(self):
-        """
-        Listens for multicast messages.
-        """
-        with socket.socket(
-            socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP
-        ) as sock:
-
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
-            # Bind to 0.0.0.0:PORT instead of the multicast IP
             sock.bind(("0.0.0.0", self.MULTICAST_PORT))
-
-            # Join multicast group
             mreq = socket.inet_aton(self.MULTICAST_IP) + socket.inet_aton("0.0.0.0")
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-
             while self.is_running:
                 try:
                     data, _ = sock.recvfrom(self.BUFFER_SIZE)
-
                     packet = BasePacket.deserialize(data)
-
                     if isinstance(packet, ChatMessagePacket):
-                        self.print_message(packet)
-
-                    self.logger(f"Packet received from: {packet.sender_id}")
-
+                        ConsolePrinter.chat(packet)
+                    ConsolePrinter.info(f"Packet received from: {packet.sender_id}")
                 except Exception as e:
-                    self.logger(f"[Error] Multicast receive error: {e}")
+                    ConsolePrinter.error(f"[Error] Multicast receive error: {e}")
 
-    #
-    # Server Operations
     def start_client(self):
-        """
-        Starts the client to send and receive messages.
-        """
-        print("Welcome to the Chat App.")
-        receive_thread = threading.Thread(target=self.receive_multicast, daemon=True)
-        receive_thread.start()
+        ConsolePrinter.info("Welcome to the Chat App.")
+        threading.Thread(target=self.receive_multicast, daemon=True).start()
         try:
             while self.is_running:
                 input_message = input("\n[Input] Type your message: ")
                 if input_message.lower() == "exit":
-                    self.logger("Exiting application")
-                    self.print_message("Exiting application")
+                    ConsolePrinter.warning("Exiting application")
                     self.is_running = False
                     break
-                packet = ChatMessagePacket(
-                    sender_id=self.user_id,
-                    message=input_message,
-                    chat_group=self.group_id,
-                )
+                packet = ChatMessagePacket(sender_id=self.user_id, message=input_message, chat_group=self.group_id)
                 self.send_broadcast(packet)
         except KeyboardInterrupt:
-            self.logger("\nClient stopped.")
-
-    def exit_client(self):
-        self.is_running = False
+            ConsolePrinter.warning("Client stopped.")
+            self.is_running = False
 
 
 if __name__ == "__main__":
     client = ChatClient()
-    client.start_client()
+    if client.is_running:
+        client.start_client()
