@@ -1,6 +1,7 @@
 import pickle
 import uuid
 from abc import ABC, abstractmethod
+import hashlib
 
 
 class BasePacket(ABC):
@@ -8,6 +9,13 @@ class BasePacket(ABC):
     def __init__(self, sender_id: str):
         self.sender_id = sender_id
         self.id = uuid.uuid1()
+        self.checksum = None
+
+    def calculate_checksum(self):
+        return hashlib.md5(str(self.id).encode()).hexdigest()
+
+    def update_checksum(self):
+        self.checksum = self.calculate_checksum()
 
     @abstractmethod
     def get_packet_type(self) -> str:

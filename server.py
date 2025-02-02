@@ -25,13 +25,6 @@ from packet import (
 )
 
 
-# TODO: Multiple servers can't start at the first DISCOVERY_TIMEOUT seconds
-
-# TODO: Implement Logical Ring for leader election
-# TODO: Implement LCR algorithm for leader election
-# TODO: Implement heartbeat on the logical ring
-# TODO: Implement server leave
-
 # Right for Election
 # Left for Heartbeat
 
@@ -109,12 +102,6 @@ class ChatServer:
         # sys.stdout.write(f"{self.server_id} [{datetime.now()}] {message}\n")
         sys.stdout.write(f"{self.server_id[:5]} || {message}\n")
 
-    def uuid1_to_timestamp(self, uuid1):
-        # Extract the timestamp components from the UUID
-        timestamp = (uuid1.time - 0x01B21DD213814000) / 1e7  # Convert to seconds
-        # UUID epoch starts at 1582-10-15, convert to standard datetime
-        return datetime(1970, 1, 1) + timedelta(seconds=timestamp)
-
     def get_server_ip(self):
         os_name = platform.system()
 
@@ -162,8 +149,9 @@ class ChatServer:
     #
     # Packet Sending
     def send_unicast(self, packet: BasePacket, recipient_ip: str, recipient_port: int):
+        packet.update_checksum()
+        serialized_packet = packet.serialize()
         try:
-            serialized_packet = packet.serialize()
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as unicast_socket:
                 unicast_socket.connect((recipient_ip, recipient_port))
                 unicast_socket.send(serialized_packet)
@@ -173,8 +161,9 @@ class ChatServer:
     def send_multicast(
         self, packet: BasePacket, recipient_ip: str, recipient_port: int
     ):
+        packet.update_checksum()
+        serialized_packet = packet.serialize()
         try:
-            serialized_packet = packet.serialize()
             self.multicast_socket.sendto(
                 serialized_packet, (recipient_ip, recipient_port)
             )
@@ -183,8 +172,9 @@ class ChatServer:
 
     def send_broadcast(self, packet: BasePacket):
 
+        packet.update_checksum()
+        serialized_packet = packet.serialize()
         try:
-            serialized_packet = packet.serialize()
             self.broadcast_socket.sendto(
                 serialized_packet, (self.BROADCAST_IP, self.BROADCAST_PORT)
             )
@@ -197,6 +187,11 @@ class ChatServer:
 
         try:
             packet = BasePacket.deserialize(raw_packet)
+
+            # Check the checksum
+            if packet.checksum != packet.calculate_checksum():
+                self.logger(f"Checksum mismatch for packet: {packet.get_packet_type()}")
+                return
 
             if isinstance(packet, ChatMessagePacket):
                 self.on_chat_message(
@@ -304,9 +299,10 @@ class ChatServer:
     def on_leader_election(
         self, packet: LeaderElectionStartPacket, packet_ip: str, packet_port: int
     ):
-
         """Handle incoming leader election packets."""
-        self.logger(f"Received election packet from {packet.sender_id} with election ID {packet.election_id}")
+        self.logger(
+            f"Received election packet from {packet.sender_id} with election ID {packet.election_id}"
+        )
 
         if packet.election_id == self.server_id:
             # Received own ID, declare self as leader
@@ -314,15 +310,23 @@ class ChatServer:
             self.become_leader()
         elif packet.election_id > self.server_id:
             # Forward the election packet to the next server
-            self.logger(f"Forwarding election packet with ID {packet.election_id} to the next server.")
+            self.logger(
+                f"Forwarding election packet with ID {packet.election_id} to the next server."
+            )
             self.send_unicast(
                 packet=packet,
-                recipient_ip=self.server_list[self.get_right_logical_server_id()]["unicast_ip"],
-                recipient_port=self.server_list[self.get_right_logical_server_id()]["unicast_port"],
+                recipient_ip=self.server_list[self.get_right_logical_server_id()][
+                    "unicast_ip"
+                ],
+                recipient_port=self.server_list[self.get_right_logical_server_id()][
+                    "unicast_port"
+                ],
             )
         else:
             # Ignore packets with smaller IDs
-            self.logger(f"Ignoring election packet with smaller ID {packet.election_id}.")
+            self.logger(
+                f"Ignoring election packet with smaller ID {packet.election_id}."
+            )
 
     def on_leader_announce(
         self, packet: LeaderAnnouncePacket, packet_ip: str, packet_port: int
@@ -459,8 +463,12 @@ class ChatServer:
         )
         self.send_unicast(
             packet=election_packet,
-            recipient_ip=self.server_list[self.get_right_logical_server_id()]["unicast_ip"],
-            recipient_port=self.server_list[self.get_right_logical_server_id()]["unicast_port"],
+            recipient_ip=self.server_list[self.get_right_logical_server_id()][
+                "unicast_ip"
+            ],
+            recipient_port=self.server_list[self.get_right_logical_server_id()][
+                "unicast_port"
+            ],
         )
 
     #

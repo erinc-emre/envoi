@@ -72,6 +72,8 @@ class ChatClient:
         self.MULTICAST_PORT = group_info["multicast_port"]
 
     def send_broadcast(self, packet):
+
+        packet.update_checksum()
         """Sends a broadcast message to the network."""
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client_socket:
             client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -88,14 +90,21 @@ class ChatClient:
             socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP
         ) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind(('', self.MULTICAST_PORT))
-            #mreq = socket.inet_aton(self.MULTICAST_IP) + socket.INADDR_ANY
-            mreq = struct.pack("4sl", socket.inet_aton(self.MULTICAST_IP), socket.INADDR_ANY)
+            sock.bind(("", self.MULTICAST_PORT))
+            # mreq = socket.inet_aton(self.MULTICAST_IP) + socket.INADDR_ANY
+            mreq = struct.pack(
+                "4sl", socket.inet_aton(self.MULTICAST_IP), socket.INADDR_ANY
+            )
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
             while self.is_running:
                 try:
                     data, _ = sock.recvfrom(self.BUFFER_SIZE)
                     packet = BasePacket.deserialize(data)
+
+                    if packet.checksum != packet.calculate_checksum():
+                        ConsolePrinter.error("Checksum mismatch. Packet dropped.")
+                        continue
+
                     if isinstance(packet, ChatMessagePacket):
                         self.handle_chat_message(packet)
                     ConsolePrinter.info(f"Packet received from: {packet.sender_id}")
