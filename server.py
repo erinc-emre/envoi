@@ -72,6 +72,7 @@ class ChatServer:
         self.current_leader = None
         self.is_running = False
         self.last_discovery_request_time = None
+        self.election_in_progress = False
         self.discovery_reply_receive = threading.Event()
         self.last_seen_heartbeat = datetime.now()
         self.chat_group_message_sequence = {}
@@ -290,24 +291,10 @@ class ChatServer:
 
             # Update the server list with the received server list
             self.server_list = packet.server_list
-
             self.logger("Joined to the existing system, Server list updated")
 
-            # Start the leader election process
-            leader_election_start_packet = LeaderElectionStartPacket(
-                sender_id=self.server_id, server_list=self.server_list
-            )
-            # Send the leader election start packet to the right logical server
-            # self.send_unicast(leader_election_start_packet, packet_ip, packet_port)
-            self.send_unicast(
-                packet=leader_election_start_packet,
-                recipient_ip=self.server_list[self.get_right_logical_server_id()][
-                    "unicast_ip"
-                ],
-                recipient_port=self.server_list[self.get_right_logical_server_id()][
-                    "unicast_port"
-                ],
-            )
+            # Start the LCR leader election process
+            self.start_lcr_election()
         else:
             self.logger("Outdated discovery reply packet received")
 
@@ -318,11 +305,24 @@ class ChatServer:
         self, packet: LeaderElectionStartPacket, packet_ip: str, packet_port: int
     ):
 
-        self.logger("Leader election process started")
-        self.server_list = packet.server_list
+        """Handle incoming leader election packets."""
+        self.logger(f"Received election packet from {packet.sender_id} with election ID {packet.election_id}")
 
-        # TODO: TEMPORARY
-        self.become_leader()
+        if packet.election_id == self.server_id:
+            # Received own ID, declare self as leader
+            self.logger("Received own ID in election. Declaring self as leader.")
+            self.become_leader()
+        elif packet.election_id > self.server_id:
+            # Forward the election packet to the next server
+            self.logger(f"Forwarding election packet with ID {packet.election_id} to the next server.")
+            self.send_unicast(
+                packet=packet,
+                recipient_ip=self.server_list[self.get_right_logical_server_id()]["unicast_ip"],
+                recipient_port=self.server_list[self.get_right_logical_server_id()]["unicast_port"],
+            )
+        else:
+            # Ignore packets with smaller IDs
+            self.logger(f"Ignoring election packet with smaller ID {packet.election_id}.")
 
     def on_leader_announce(
         self, packet: LeaderAnnouncePacket, packet_ip: str, packet_port: int
@@ -443,6 +443,25 @@ class ChatServer:
             keys
         )  # Modulo to wrap around to the first key
         return keys[next_index]
+
+    def start_lcr_election(self):
+        """Start the LCR leader election process."""
+        if self.election_in_progress:
+            return
+        self.election_in_progress = True
+        self.logger("Starting LCR leader election.")
+
+        # Send own ID to the right logical server
+        election_packet = LeaderElectionStartPacket(
+            sender_id=self.server_id,
+            server_list=self.server_list,
+            election_id=self.server_id,  # Include the election ID
+        )
+        self.send_unicast(
+            packet=election_packet,
+            recipient_ip=self.server_list[self.get_right_logical_server_id()]["unicast_ip"],
+            recipient_port=self.server_list[self.get_right_logical_server_id()]["unicast_port"],
+        )
 
     #
     # Threads

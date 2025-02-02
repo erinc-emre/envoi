@@ -98,9 +98,10 @@ class NodeLeavePacket(BasePacket):
 # Unicast packet
 class LeaderElectionStartPacket(BasePacket):
 
-    def __init__(self, sender_id: str, server_list: dict):
+    def __init__(self, sender_id: str, server_list: dict, election_id: str):
         super().__init__(sender_id)
         self.server_list = server_list
+        self.election_id = election_id
 
     def get_packet_type(self) -> str:
         return type(self).__name__
