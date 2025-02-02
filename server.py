@@ -120,9 +120,9 @@ class ChatServer:
     def send_unicast(self, packet: BasePacket, recipient_ip: str, recipient_port: int):
         try:
             serialized_packet = packet.serialize()
-            self.unicast_socket.sendto(
-                serialized_packet, (recipient_ip, recipient_port)
-            )
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as unicast_socket:
+                unicast_socket.connect((recipient_ip, recipient_port))
+                unicast_socket.send(serialized_packet)
         except Exception as e:
             self.logger(f"Error sending unicast packet: {e}")
 
@@ -468,13 +468,22 @@ class ChatServer:
         self.logger(f"Listening {self.UNICAST_IP}:{self.UNICAST_PORT}")
         while self.is_running:
             try:
-                data, addr = self.unicast_socket.recvfrom(self.BUFFER_SIZE)
-                self.packet_handler(
-                    raw_packet=data, packet_ip=addr[0], packet_port=addr[1]
-                )
+                # Accept an incoming TCP connection
+                conn, addr = self.unicast_socket.accept()
+
+                while True:
+                    data = conn.recv(self.BUFFER_SIZE)
+                    if not data:
+                        break  # Exit loop if client disconnects
+
+                    self.packet_handler(
+                        raw_packet=data, packet_ip=addr[0], packet_port=addr[1]
+                    )
+
+                conn.close()  # Close connection after processing
 
             except Exception as e:
-                self.logger(f"Error receiving a unicast packet: {e}")
+                self.logger(f"TCP socket error: {e}")
 
     def discovery_reply_wait(self):
         self.logger("Searching for an existing systems in the network")
@@ -599,9 +608,13 @@ class ChatServer:
 
         # Bind the unicast socket
         try:
-            self.unicast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # Create a TCP socket
+            self.unicast_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.unicast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+            # Bind the socket to an IP and Port
             self.unicast_socket.bind((self.UNICAST_IP, self.UNICAST_PORT))
+            self.unicast_socket.listen(5)
         except Exception as e:
             self.logger(f"Unicast port binding error: {e}")
 

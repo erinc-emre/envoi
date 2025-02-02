@@ -1,5 +1,6 @@
 import socket
 import json
+import struct
 import threading
 from packet import BasePacket, ChatMessagePacket, MissingChatMessagePacket
 from console_printer import ConsolePrinter
@@ -87,8 +88,9 @@ class ChatClient:
             socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP
         ) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind(("0.0.0.0", self.MULTICAST_PORT))
-            mreq = socket.inet_aton(self.MULTICAST_IP) + socket.inet_aton("0.0.0.0")
+            sock.bind(('', self.MULTICAST_PORT))
+            #mreq = socket.inet_aton(self.MULTICAST_IP) + socket.INADDR_ANY
+            mreq = struct.pack("4sl", socket.inet_aton(self.MULTICAST_IP), socket.INADDR_ANY)
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
             while self.is_running:
                 try:
