@@ -44,8 +44,11 @@ class ChatServer:
 
         # Load configuration
         self.config = self.load_config(config_path)
+        self.setup_network_config()
+        self.setup_server_state()
+        self.setup_sockets()
 
-        # Server network configuration
+    def setup_network_config(self):
         self.BROADCAST_IP = self.config["network"]["BROADCAST_IP"]
         self.BROADCAST_PORT = self.config["network"]["BROADCAST_PORT"]
         self.UNICAST_IP = self.get_server_ip()
@@ -62,20 +65,17 @@ class ChatServer:
         args = parser.parse_args()
         self.UNICAST_PORT = args.unicast_port
 
-        # Server state
+    def setup_server_state(self):
         self.server_id = str(uuid.uuid1())
         self.session_id = None
         self.is_leader = False
         self.current_leader = None
         self.is_running = False
         self.last_discovery_request_time = None
-
         self.discovery_reply_receive = threading.Event()
-
-        # Communication sockets
-        self.broadcast_socket: Optional[socket.socket] = None
-        self.multicast_socket: Optional[socket.socket] = None
-        self.unicast_socket: Optional[socket.socket] = None
+        self.last_seen_heartbeat = datetime.now()
+        self.chat_group_message_sequence = {}
+        self.chat_message_cache = {}
 
         # Servers in the network
         self.server_list = {
@@ -87,17 +87,14 @@ class ChatServer:
             },
         }
 
-        # sequence_ids for each group chats
-        self.chat_group_message_sequence = {}
-
-        # Chat Message Cache
-        self.chat_message_cache = {}
-
-        # Heartbeat
-        self.last_seen_heartbeat = datetime.now()
+    def setup_sockets(self):
+        # Communication sockets
+        self.broadcast_socket: Optional[socket.socket] = None
+        self.multicast_socket: Optional[socket.socket] = None
+        self.unicast_socket: Optional[socket.socket] = None
 
     #
-    # Configuration
+    # Configuration and Utility Methods
     def load_config(self, config_path: str) -> Dict[str, Any]:
         try:
             with open(config_path, "r") as config_file:
@@ -106,6 +103,52 @@ class ChatServer:
         except (FileNotFoundError, json.JSONDecodeError) as e:
             self.logger(f"Error loading configuration: {e}")
             return {}
+
+    def logger(self, message):
+        # sys.stdout.write(f"{self.server_id} [{datetime.now()}] {message}\n")
+        sys.stdout.write(f"{self.server_id[:5]} || {message}\n")
+
+    def uuid1_to_timestamp(self, uuid1):
+        # Extract the timestamp components from the UUID
+        timestamp = (uuid1.time - 0x01B21DD213814000) / 1e7  # Convert to seconds
+        # UUID epoch starts at 1582-10-15, convert to standard datetime
+        return datetime(1970, 1, 1) + timedelta(seconds=timestamp)
+
+    def get_server_ip(self):
+        os_name = platform.system()
+
+        if os_name == "Linux":
+            # Use hostname -I and awk for Linux
+            try:
+                return subprocess.getoutput("hostname -I | awk '{print $1}'")
+            except Exception as e:
+                self.logger(f"Error retrieving IP on Linux: {e}")
+                return None
+        elif os_name == "Windows":
+            # Use socket for Windows
+            try:
+                hostname = socket.gethostname()
+                return socket.gethostbyname(hostname)
+            except Exception as e:
+                self.logger(f"Error retrieving IP on Windows: {e}")
+                return None
+        elif os_name == "Darwin":  # macOS
+            # Use socket or ifconfig for macOS
+            try:
+                result = subprocess.getoutput(
+                    "ifconfig | grep 'inet ' | grep -v 127.0.0.1 | awk '{print $2}'"
+                )
+                if result:
+                    return result.split("\n")[0]  # Return the first found IP
+                else:
+                    hostname = socket.gethostname()
+                    return socket.gethostbyname(hostname)
+            except Exception as e:
+                self.logger(f"Error retrieving IP on macOS: {e}")
+                return None
+        else:
+            self.logger("Unsupported OS.")
+            return None
 
     #
     # Validation
@@ -204,36 +247,6 @@ class ChatServer:
         self.send_multicast(packet, multicast_ip, multicast_port)
         self.logger(f"[Multicast] Forwarded message to {multicast_ip}:{multicast_port}")
 
-    def on_missing_message(
-        self, packet: MissingChatMessagePacket, packet_ip: str, packet_port: int
-    ):
-
-        # Check if the chat group exists in the cache
-        if packet.chat_group not in self.chat_message_cache:
-            self.logger(f"Chat group {packet.chat_group} not found in the cache")
-            return
-
-        # Session ID mismatch
-        # Ignore the request
-        if packet.missing_packet_sequence["session_id"] != self.session_id:
-            self.logger(
-                f"Session ID mismatch, expected {self.session_id} but got {packet.missing_packet_sequence['session_id']}"
-            )
-            return
-
-        # Check if the missing packet is in the cache
-        # If found, resend the message
-        for message in self.chat_message_cache[packet.chat_group]:
-            if message.sequence["seq_id"] == packet.missing_packet_sequence["seq_id"]:
-                multicast_ip, multicast_port = self.get_multicast_group_addr(
-                    packet.chat_group
-                )
-                self.send_multicast(message, multicast_ip, multicast_port)
-                self.logger(
-                    f"Missing message resent to {multicast_ip}:{multicast_port}"
-                )
-                break
-
     def on_node_discovery(
         self, packet: NodeDiscoveryPacket, packet_ip: str, packet_port: int
     ):
@@ -323,8 +336,38 @@ class ChatServer:
     def on_heartbeat(self, packet: HeartbeatPacket, packet_ip: str, packet_port: int):
         self.last_seen_heartbeat = datetime.now()
 
+    def on_missing_message(
+        self, packet: MissingChatMessagePacket, packet_ip: str, packet_port: int
+    ):
+
+        # Check if the chat group exists in the cache
+        if packet.chat_group not in self.chat_message_cache:
+            self.logger(f"Chat group {packet.chat_group} not found in the cache")
+            return
+
+        # Session ID mismatch
+        # Ignore the request
+        if packet.missing_packet_sequence["session_id"] != self.session_id:
+            self.logger(
+                f"Session ID mismatch, expected {self.session_id} but got {packet.missing_packet_sequence['session_id']}"
+            )
+            return
+
+        # Check if the missing packet is in the cache
+        # If found, resend the message
+        for message in self.chat_message_cache[packet.chat_group]:
+            if message.sequence["seq_id"] == packet.missing_packet_sequence["seq_id"]:
+                multicast_ip, multicast_port = self.get_multicast_group_addr(
+                    packet.chat_group
+                )
+                self.send_multicast(message, multicast_ip, multicast_port)
+                self.logger(
+                    f"Missing message resent to {multicast_ip}:{multicast_port}"
+                )
+                break
+
     #
-    # Functionalities
+    # Server Functionalities
     def become_leader(self):
         self.is_leader = True
         for server in self.server_list.values():
@@ -354,53 +397,6 @@ class ChatServer:
         # Update server list with group assignments
         for server_id, groups in group_assignments.items():
             self.server_list[server_id]["chat_groups"] = groups
-
-    def logger(self, message):
-
-        # sys.stdout.write(f"{self.server_id} [{datetime.now()}] {message}\n")
-        sys.stdout.write(f"{self.server_id[:5]} || {message}\n")
-
-    def uuid1_to_timestamp(self, uuid1):
-        # Extract the timestamp components from the UUID
-        timestamp = (uuid1.time - 0x01B21DD213814000) / 1e7  # Convert to seconds
-        # UUID epoch starts at 1582-10-15, convert to standard datetime
-        return datetime(1970, 1, 1) + timedelta(seconds=timestamp)
-
-    def get_server_ip(self):
-        os_name = platform.system()
-
-        if os_name == "Linux":
-            # Use hostname -I and awk for Linux
-            try:
-                return subprocess.getoutput("hostname -I | awk '{print $1}'")
-            except Exception as e:
-                self.logger(f"Error retrieving IP on Linux: {e}")
-                return None
-        elif os_name == "Windows":
-            # Use socket for Windows
-            try:
-                hostname = socket.gethostname()
-                return socket.gethostbyname(hostname)
-            except Exception as e:
-                self.logger(f"Error retrieving IP on Windows: {e}")
-                return None
-        elif os_name == "Darwin":  # macOS
-            # Use socket or ifconfig for macOS
-            try:
-                result = subprocess.getoutput(
-                    "ifconfig | grep 'inet ' | grep -v 127.0.0.1 | awk '{print $2}'"
-                )
-                if result:
-                    return result.split("\n")[0]  # Return the first found IP
-                else:
-                    hostname = socket.gethostname()
-                    return socket.gethostbyname(hostname)
-            except Exception as e:
-                self.logger(f"Error retrieving IP on macOS: {e}")
-                return None
-        else:
-            self.logger("Unsupported OS.")
-            return None
 
     def is_responsible_for_chat_group(self, chat_group):
         return chat_group in self.server_list[self.server_id]["chat_groups"]
@@ -560,6 +556,27 @@ class ChatServer:
         self.is_running = True
         self.logger(f"Server Started")
 
+        self.setup_broadcast_socket()
+        self.setup_multicast_socket()
+        self.setup_unicast_socket()
+
+        self.start_listening_threads()
+        self.broadcast_discovery_message()
+        self.start_heartbeat_threads()
+
+    def stop_server(self):
+
+        self.is_running = False
+        if self.broadcast_socket:
+            self.broadcast_socket.close()
+        if self.multicast_socket:
+            self.multicast_socket.close()
+        # TODO: What happens if we use TCP?
+        if self.unicast_socket:
+            self.unicast_socket.close()
+        self.logger("Server stopped.")
+
+    def setup_broadcast_socket(self):
         # Bind the broadcast socket
         try:
             # Setup Broadcast Socket
@@ -574,6 +591,7 @@ class ChatServer:
         except Exception as e:
             self.logger(f"Broadcast port binding error: {e}")
 
+    def setup_multicast_socket(self):
         # Bind the multicast socket
         try:
 
@@ -606,6 +624,7 @@ class ChatServer:
             self.logger(f"Multicast port binding error: {e}")
             self.multicast_socket.close()
 
+    def setup_unicast_socket(self):
         # Bind the unicast socket
         try:
             # Create a TCP socket
@@ -626,6 +645,15 @@ class ChatServer:
         except Exception as e:
             self.logger(f"Broadcast listening thread error: {e}")
 
+    def start_listening_threads(self):
+        # Start the broadcast listening thread
+        try:
+            receive_broadcast_thread = threading.Thread(target=self.receive_broadcast)
+
+            receive_broadcast_thread.start()
+        except Exception as e:
+            self.logger(f"Broadcast listening thread error: {e}")
+
         # Start the unicast listening thread
         try:
             receive_unicast_thread = threading.Thread(target=self.receive_unicast)
@@ -634,6 +662,7 @@ class ChatServer:
         except Exception as e:
             self.logger(f"Unicast listening thread error: {e}")
 
+    def broadcast_discovery_message(self):
         # Broadcast the discovery message
         discovery_packet = NodeDiscoveryPacket(
             sender_id=self.server_id,
@@ -650,6 +679,7 @@ class ChatServer:
         except Exception as e:
             self.logger(f"Discovery wait thread error: {e}")
 
+    def start_heartbeat_threads(self):
         # Heartbeat sending thread
         try:
             heartbeat_thread = threading.Thread(target=self.send_heartbeat)
@@ -663,18 +693,6 @@ class ChatServer:
             heartbeat_monitor_thread.start()
         except Exception as e:
             self.logger(f"Heartbeat monitor thread error: {e}")
-
-    def stop_server(self):
-
-        self.is_running = False
-        if self.broadcast_socket:
-            self.broadcast_socket.close()
-        if self.multicast_socket:
-            self.multicast_socket.close()
-        # TODO: What happens if we use TCP?
-        if self.unicast_socket:
-            self.unicast_socket.close()
-        self.logger("Server stopped.")
 
 
 def main():
