@@ -1,4 +1,3 @@
-import datetime
 import pickle
 import uuid
 from abc import ABC, abstractmethod
@@ -8,6 +7,7 @@ class BasePacket(ABC):
 
     def __init__(self, sender_id: str):
         self.sender_id = sender_id
+        self.id = uuid.uuid1()
 
     @abstractmethod
     def get_packet_type(self) -> str:
@@ -21,7 +21,7 @@ class BasePacket(ABC):
         return pickle.loads(input)
 
     def __str__(self):
-        return f"{self.sender_id}"
+        return f"{self.id}"
 
 
 # Broadcast + Multicast packet
@@ -31,34 +31,30 @@ class ChatMessagePacket(BasePacket):
         super().__init__(sender_id)
         self.message = message
         self.chat_group = chat_group
-        self.seq_id = None
+
+        # {session_id: uuid1, sequence:int}
+        self.sequence = None
 
     def get_packet_type(self) -> str:
         return type(self).__name__
-
-    def add_seq_id(self, seq_id):
-        self.seq_id = seq_id
-
-    def get_seq_id(self):
-        return self.seq_id
 
     def __str__(self):
         return f"{super().__str__()}: {self.message}"
 
 
-class SequenceId:
-    def __init__(self, server_id, counter):
-        self.server_id = server_id
-        self.counter = counter
+class MissingChatMessagePacket(BasePacket):
 
-    def is_same_server_id(self, seq_id):
-        return self.server_id == seq_id.server_id
+    def __init__(self, sender_id: str, chat_group: str, missing_packet_sequence: dict):
+        super().__init__(sender_id)
+        self.chat_group = chat_group
+        self.missing_packet_sequence = missing_packet_sequence
 
-    def is_incoming_next_counter(self, seq_id):
-        return seq_id.counter - self.counter == 1
+    def get_packet_type(self) -> str:
+        return type(self).__name__
 
-    def is_incoming_smaller_counter(self, seq_id):
-        return seq_id.counter - self.counter < 0
+    def __str__(self):
+        return f"{super().__str__()} || Missing Chat Message Request"
+
 
 # Broadcast packet
 class NodeDiscoveryPacket(BasePacket):

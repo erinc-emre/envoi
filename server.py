@@ -1,6 +1,5 @@
 import argparse
 from datetime import datetime, timedelta
-import select
 import struct
 import time
 import sys
@@ -11,6 +10,7 @@ from typing import Dict, Any, Optional
 import subprocess
 import uuid
 import platform
+import copy
 
 from packet import (
     BasePacket,
@@ -21,7 +21,7 @@ from packet import (
     LeaderElectionStartPacket,
     LeaderAnnouncePacket,
     HeartbeatPacket,
-    SequenceId
+    MissingChatMessagePacket,
 )
 
 
@@ -31,6 +31,9 @@ from packet import (
 # TODO: Implement LCR algorithm for leader election
 # TODO: Implement heartbeat on the logical ring
 # TODO: Implement server leave
+
+# Right for Election
+# Left for Heartbeat
 
 
 class ChatServer:
@@ -61,6 +64,7 @@ class ChatServer:
 
         # Server state
         self.server_id = str(uuid.uuid1())
+        self.session_id = None
         self.is_leader = False
         self.current_leader = None
         self.is_running = False
@@ -84,7 +88,10 @@ class ChatServer:
         }
 
         # sequence_ids for each group chats
-        self.chat_group_sequence_id = {}
+        self.chat_group_message_sequence = {}
+
+        # Chat Message Cache
+        self.chat_message_cache = {}
 
         # Heartbeat
         self.last_seen_heartbeat = datetime.now()
@@ -175,6 +182,10 @@ class ChatServer:
                 self.on_heartbeat(
                     packet=packet, packet_ip=packet_ip, packet_port=packet_port
                 )
+            elif isinstance(packet, MissingChatMessagePacket):
+                self.on_missing_message(
+                    packet=packet, packet_ip=packet_ip, packet_port=packet_port
+                )
             else:
                 self.logger(f"Unknown packet type: {packet.get_packet_type()}")
         except Exception as e:
@@ -187,25 +198,56 @@ class ChatServer:
             return
         multicast_ip, multicast_port = self.get_multicast_group_addr(packet.chat_group)
         self.add_sequence_id_to_chat_message(packet)
+        self.cache_message(packet)
 
         # Forward message to the multicast group
         self.send_multicast(packet, multicast_ip, multicast_port)
         self.logger(f"[Multicast] Forwarded message to {multicast_ip}:{multicast_port}")
 
+    def on_missing_message(
+        self, packet: MissingChatMessagePacket, packet_ip: str, packet_port: int
+    ):
+
+        # Check if the chat group exists in the cache
+        if packet.chat_group not in self.chat_message_cache:
+            self.logger(f"Chat group {packet.chat_group} not found in the cache")
+            return
+
+        # Session ID mismatch
+        # Ignore the request
+        if packet.missing_packet_sequence["session_id"] != self.session_id:
+            self.logger(
+                f"Session ID mismatch, expected {self.session_id} but got {packet.missing_packet_sequence['session_id']}"
+            )
+            return
+
+        # Check if the missing packet is in the cache
+        # If found, resend the message
+        for message in self.chat_message_cache[packet.chat_group]:
+            if message.sequence["seq_id"] == packet.missing_packet_sequence["seq_id"]:
+                multicast_ip, multicast_port = self.get_multicast_group_addr(
+                    packet.chat_group
+                )
+                self.send_multicast(message, multicast_ip, multicast_port)
+                self.logger(
+                    f"Missing message resent to {multicast_ip}:{multicast_port}"
+                )
+                break
+
     def on_node_discovery(
         self, packet: NodeDiscoveryPacket, packet_ip: str, packet_port: int
     ):
+        # Ignore if the packet is sent by the server itself
+        if packet.sender_id == self.server_id:
+            return
 
         if self.is_leader:
             # Check if the server already exists in the system
             if packet.sender_id in self.server_list:
-                if packet.sender_id == self.server_id:
-                    return
-                else:
-                    self.logger(
-                        f"Server ID: {packet.sender_id} already exists in the system."
-                    )
-                    return
+                self.logger(
+                    f"Server ID: {packet.sender_id} already exists in the system."
+                )
+                return
 
             self.server_list[packet.sender_id] = {
                 "unicast_ip": packet.unicast_ip,
@@ -233,14 +275,26 @@ class ChatServer:
 
         if datetime.now() - self.last_discovery_request_time < timedelta(seconds=5):
 
+            # Update the server list with the received server list
             self.server_list = packet.server_list
+
             self.logger("Joined to the existing system, Server list updated")
 
             # Start the leader election process
             leader_election_start_packet = LeaderElectionStartPacket(
                 sender_id=self.server_id, server_list=self.server_list
             )
-            self.send_unicast(leader_election_start_packet, packet_ip, packet_port)
+            # Send the leader election start packet to the right logical server
+            # self.send_unicast(leader_election_start_packet, packet_ip, packet_port)
+            self.send_unicast(
+                packet=leader_election_start_packet,
+                recipient_ip=self.server_list[self.get_right_logical_server_id()][
+                    "unicast_ip"
+                ],
+                recipient_port=self.server_list[self.get_right_logical_server_id()][
+                    "unicast_port"
+                ],
+            )
         else:
             self.logger("Outdated discovery reply packet received")
 
@@ -262,8 +316,9 @@ class ChatServer:
     ):
 
         self.server_list = packet.server_list
-
+        self.session_id = str(uuid.uuid1())
         self.logger(f"Leader announced, Server list updated: {self.server_list}")
+        self.logger(f"New Server Session ID: {self.session_id}")
 
     def on_heartbeat(self, packet: HeartbeatPacket, packet_ip: str, packet_port: int):
         self.last_seen_heartbeat = datetime.now()
@@ -352,11 +407,29 @@ class ChatServer:
 
     def add_sequence_id_to_chat_message(self, packet: ChatMessagePacket):
         chat_group = packet.chat_group
-        if chat_group not in self.chat_group_sequence_id:
-            self.chat_group_sequence_id[chat_group] = 0
-        packet.add_seq_id(SequenceId(self.server_id, self.chat_group_sequence_id[chat_group]))
-        self.chat_group_sequence_id[chat_group] += 1
+        # Initialize the sequence ID for the chat group, if not exists
+        # It resets upon server restart
+        if chat_group not in self.chat_group_message_sequence:
+            self.chat_group_message_sequence[chat_group] = {
+                "session_id": self.session_id,
+                "seq_id": 0,
+            }
+        self.chat_group_message_sequence[chat_group]["seq_id"] += 1
+        packet.sequence = self.chat_group_message_sequence[chat_group]
 
+    def cache_message(self, packet: ChatMessagePacket):
+
+        # Required to avoid reference issues
+        pacet_copy = copy.deepcopy(packet)
+
+        chat_group = pacet_copy.chat_group
+        if chat_group not in self.chat_message_cache:
+            self.chat_message_cache[chat_group] = []
+
+        if len(self.chat_message_cache[chat_group]) == 100:
+            self.chat_message_cache[chat_group].pop(0)
+
+        self.chat_message_cache[chat_group].append(pacet_copy)
 
     def get_multicast_group_addr(self, user_group):
         return (
@@ -364,7 +437,7 @@ class ChatServer:
             self.config["chat"]["groups"][user_group]["multicast_port"],
         )
 
-    def get_right_logical_server(self):
+    def get_right_logical_server_id(self):
         keys = list(self.server_list.keys())
         if self.server_id not in keys:
             raise ValueError("Current server ID not found in data.")
@@ -373,15 +446,6 @@ class ChatServer:
         next_index = (current_index + 1) % len(
             keys
         )  # Modulo to wrap around to the first key
-        return keys[next_index]
-
-    def get_left_logical_server(self):
-        keys = list(self.server_list.keys())
-        if self.server_id not in keys:
-            raise ValueError("Current server ID not found in data.")
-
-        current_index = keys.index(self.server_id)
-        next_index = (current_index - 1) % len(keys)
         return keys[next_index]
 
     #
@@ -413,7 +477,7 @@ class ChatServer:
                 self.logger(f"Error receiving a unicast packet: {e}")
 
     def discovery_reply_wait(self):
-        self.logger("Waiting for existing systems in the network")
+        self.logger("Searching for an existing systems in the network")
         start_time = datetime.now()
         while True:
             if datetime.now() - start_time > timedelta(seconds=self.DISCOVERY_TIMEOUT):
@@ -431,17 +495,17 @@ class ChatServer:
             try:
                 self.send_unicast(
                     packet=heartbeat_packet,
-                    recipient_ip=self.server_list[self.get_right_logical_server()][
+                    recipient_ip=self.server_list[self.get_right_logical_server_id()][
                         "unicast_ip"
                     ],
-                    recipient_port=self.server_list[self.get_right_logical_server()][
+                    recipient_port=self.server_list[self.get_right_logical_server_id()][
                         "unicast_port"
                     ],
                 )
             except Exception as e:
                 self.logger(f"Error sending heartbeat: {e}")
             time.sleep(self.config["network"]["HEARTBEAT_INTERVAL"])
-            self.logger(f"Heartbeat sent to {self.get_right_logical_server()}")
+            self.logger(f"Heartbeat sent to {self.get_right_logical_server_id()}")
 
     def monitor_heartbeat(self):
         while self.is_running:
@@ -449,13 +513,13 @@ class ChatServer:
                 seconds=self.config["network"]["HEARTBEAT_TIMEOUT"]
             ):
                 self.logger(
-                    f"Heartbeat timeout, server {self.get_left_logical_server()} is down."
+                    f"Heartbeat timeout, server {self.get_right_logical_server_id()} is down."
                 )
 
                 # Give the server some time to recover
                 self.last_seen_heartbeat = datetime.now()
 
-                dead_server_id = self.get_left_logical_server()
+                dead_server_id = self.get_right_logical_server_id()
                 if len(self.server_list) == 2:
 
                     self.server_list.pop(dead_server_id)
@@ -470,11 +534,11 @@ class ChatServer:
                     )
                     self.send_unicast(
                         packet=leader_election_start_packet,
-                        recipient_ip=self.server_list[self.get_right_logical_server()][
-                            "unicast_ip"
-                        ],
+                        recipient_ip=self.server_list[
+                            self.get_right_logical_server_id()
+                        ]["unicast_ip"],
                         recipient_port=self.server_list[
-                            self.get_right_logical_server()
+                            self.get_right_logical_server_id()
                         ]["unicast_port"],
                     )
 
@@ -509,13 +573,15 @@ class ChatServer:
             )
             try:
                 if platform.system() == "Windows":
-                    self.multicast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    self.multicast_socket.setsockopt(
+                        socket.SOL_SOCKET, socket.SO_REUSEADDR, 1
+                    )
                 else:
                     self.multicast_socket.setsockopt(
                         socket.SOL_SOCKET, socket.SO_REUSEPORT, 1
                     )  # Optional, may not be available on all systems
             except AttributeError:
-                print(
+                self.logger(
                     "SO_REUSEPORT is not supported on this system. Continuing without it."
                 )
 
