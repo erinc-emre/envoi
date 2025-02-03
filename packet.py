@@ -104,32 +104,22 @@ class NodeLeavePacket(BasePacket):
 
 
 # Unicast packet
-class LeaderElectionStartPacket(BasePacket):
+class LeaderElectionPacket(BasePacket):
 
-    def __init__(self, sender_id: str, server_list: dict, election_id: str):
+    def __init__(self, sender_id: str, server_list: dict, election_id: str, is_election_done: bool):
         super().__init__(sender_id)
         self.server_list = server_list
         self.election_id = election_id
+        self.is_election_done = is_election_done
 
     def get_packet_type(self) -> str:
         return type(self).__name__
 
     def __str__(self):
-        return f"{super().__str__()} leader election started"
-
-
-# Broadcast packet
-class LeaderAnnouncePacket(BasePacket):
-
-    def __init__(self, sender_id: str, server_list: dict):
-        super().__init__(sender_id)
-        self.server_list = server_list
-
-    def get_packet_type(self) -> str:
-        return type(self).__name__
-
-    def __str__(self):
-        return f"{super().__str__()} announced new leader: {self.leader_id}"
+        if self.is_election_done:
+            return f"{super().__str__()} announced new leader: {self.leader_id}"
+        else:
+            return f"{super().__str__()} leader election in progress"
 
 
 # Unicast packet
