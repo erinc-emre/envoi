@@ -300,9 +300,9 @@ class ChatServer:
         self, packet: LeaderElectionStartPacket, packet_ip: str, packet_port: int
     ):
         """Handle incoming leader election packets."""
-        self.logger(
-            f"Received election packet from {packet.sender_id} with election ID {packet.election_id}"
-        )
+        if not self.election_in_progress:
+            self.election_in_progress = True
+        self.logger(f"Received election packet from {packet.sender_id} with election ID {packet.election_id}")
 
         if packet.election_id == self.server_id:
             # Received own ID, declare self as leader
@@ -323,15 +323,24 @@ class ChatServer:
                 ],
             )
         else:
-            # Ignore packets with smaller IDs
+            # Received a smaller ID, discard it and send own ID
             self.logger(
-                f"Ignoring election packet with smaller ID {packet.election_id}."
+                f"Received smaller ID {packet.election_id}. Sending own ID {self.server_id} to the next server.")
+            election_packet = LeaderElectionStartPacket(
+                sender_id=self.server_id,
+                server_list=self.server_list,
+                election_id=self.server_id,  # Send own ID
+            )
+            self.send_unicast(
+                packet=election_packet,
+                recipient_ip=self.server_list[self.get_right_logical_server_id()]["unicast_ip"],
+                recipient_port=self.server_list[self.get_right_logical_server_id()]["unicast_port"],
             )
 
     def on_leader_announce(
         self, packet: LeaderAnnouncePacket, packet_ip: str, packet_port: int
     ):
-
+        self.election_in_progress = False
         self.server_list = packet.server_list
         self.session_id = str(uuid.uuid1())
         self.logger(f"Leader announced, Server list updated: {self.server_list}")
@@ -420,16 +429,16 @@ class ChatServer:
     def cache_message(self, packet: ChatMessagePacket):
 
         # Required to avoid reference issues
-        pacet_copy = copy.deepcopy(packet)
+        packet_copy = copy.deepcopy(packet)
 
-        chat_group = pacet_copy.chat_group
+        chat_group = packet_copy.chat_group
         if chat_group not in self.chat_message_cache:
             self.chat_message_cache[chat_group] = []
 
         if len(self.chat_message_cache[chat_group]) == 100:
             self.chat_message_cache[chat_group].pop(0)
 
-        self.chat_message_cache[chat_group].append(pacet_copy)
+        self.chat_message_cache[chat_group].append(packet_copy)
 
     def get_multicast_group_addr(self, user_group):
         return (
