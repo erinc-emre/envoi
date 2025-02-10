@@ -317,20 +317,19 @@ class ChatServer:
     def handle_higher_id_leader_election_packet(self, packet:LeaderElectionPacket):
         if packet.is_election_done:
             self.update_on_new_leader_announce(packet)
-        else:
-            # Forward the election packet to the next server
-            self.logger(
-                f"Forwarding election packet with ID {packet.election_id} to the next server."
-            )
-            self.send_unicast(
-                packet=packet,
-                recipient_ip=self.server_list[self.get_right_logical_server_id()][
-                    "unicast_ip"
-                ],
-                recipient_port=self.server_list[self.get_right_logical_server_id()][
-                    "unicast_port"
-                ],
-            )
+        # Forward the election packet to the next server
+        self.logger(
+            f"Forwarding election packet with ID {packet.election_id} to the next server."
+        )
+        self.send_unicast(
+            packet=packet,
+            recipient_ip=self.server_list[self.get_right_logical_server_id()][
+                "unicast_ip"
+            ],
+            recipient_port=self.server_list[self.get_right_logical_server_id()][
+                "unicast_port"
+            ],
+        )
 
     def handle_lower_id_leader_election_packet(self, packet:LeaderElectionPacket):
         # Received a smaller ID, discard it and send own ID
