@@ -299,6 +299,8 @@ class ChatServer:
             self.election_in_progress = True
         self.logger(f"Received election packet from {packet.sender_id} with election ID {packet.election_id}")
 
+        self.server_list = packet.server_list
+
         if packet.election_id == self.server_id:
             self.handle_same_id_leader_election_packet(packet)
         elif packet.election_id > self.server_id:
@@ -475,6 +477,15 @@ class ChatServer:
         )  # Modulo to wrap around to the first key
         return keys[next_index]
 
+    def get_left_logical_server_id(self):
+        keys = list(self.server_list.keys())
+        if self.server_id not in keys:
+            raise ValueError("Current server ID not found in data.")
+
+        current_index = keys.index(self.server_id)
+        prev_index = (current_index - 1) % len(keys)  # Wrap around to the last key if at the first position
+        return keys[prev_index]
+
     def start_lcr_election(self):
         """Start the LCR leader election process."""
         if self.election_in_progress:
@@ -573,13 +584,13 @@ class ChatServer:
                 seconds=self.config["network"]["HEARTBEAT_TIMEOUT"]
             ):
                 self.logger(
-                    f"Heartbeat timeout, server {self.get_right_logical_server_id()} is down."
+                    f"Heartbeat timeout, server {self.get_left_logical_server_id()} is down."
                 )
 
                 # Give the server some time to recover
                 self.last_seen_heartbeat = datetime.now()
 
-                dead_server_id = self.get_right_logical_server_id()
+                dead_server_id = self.get_left_logical_server_id()
                 if len(self.server_list) == 2:
 
                     self.server_list.pop(dead_server_id)
